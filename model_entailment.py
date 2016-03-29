@@ -1,6 +1,8 @@
 import sys
 import numpy
 import gzip
+import argparse
+import random
 from index_data import DataProcessor
 from onto_attention import OntoAttentionLSTM
 from keras.models import Graph
@@ -93,7 +95,7 @@ class EntailmentModel(object):
         C2_ind[i][-sent2len+j][-len(syn_ind):] = syn_ind
     return (S1, S2), (S1_ind, S2_ind), (C1_ind, C2_ind)
 
-  def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, synLSTM=False):
+  def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, ontoLSTM=False):
     word_dim = 50
     assert S1_ind.shape == S2_ind.shape
     assert C1_ind.shape == C2_ind.shape
@@ -105,7 +107,8 @@ class EntailmentModel(object):
     for i, ind in enumerate(label_ind):
       label_onehot[i][ind] = 1.0
     model = Graph()
-    if synLSTM:
+    if ontoLSTM:
+      print >>sys.stderr, "Using OntoLSTM"
       model.add_input(name='sent1', input_shape=C1_ind.shape[1:])
       model.add_input(name='sent2', input_shape=C2_ind.shape[1:])
       embedding = HigherOrderEmbedding(input_dim=num_syns, output_dim=word_dim)
@@ -115,16 +118,18 @@ class EntailmentModel(object):
       model.add_node(Dense(output_dim=num_label_types, activation='softmax'), name='label_probs', inputs=['sent1_lstm', 'sent2_lstm'], merge_mode='concat')
       model.add_output(name='output', input='label_probs')
       model.compile(optimizer='adam', loss={'output': 'categorical_crossentropy'})
-      model.fit({'sent1': C1_ind[:train_size], 'sent2': C2_ind[:train_size], 'output': label_onehot[:train_size]}, nb_epoch=20)
-      train_probs = model.predict({'sent1': C1_ind[:train_size], 'sent2': C2_ind[:train_size]})['output']
-      valid_probs = model.predict({'sent1': C1_ind[train_size:], 'sent2': C2_ind[train_size:]})['output']
-      train_preds = numpy.argmax(train_probs, axis=1)
-      train_labels = numpy.argmax(label_onehot[:train_size], axis=1)
-      valid_preds = numpy.argmax(valid_probs, axis=1)
-      valid_labels = numpy.argmax(label_onehot[train_size:], axis=1)
-      print >>sys.stderr, "Train accuracy", sum(train_preds == train_labels) / float(len(train_preds))
-      print >>sys.stderr, "Valid accuracy", sum(valid_preds == valid_labels) / float(len(valid_preds))
+      for _ in range(20):
+        model.fit({'sent1': C1_ind[:train_size], 'sent2': C2_ind[:train_size], 'output': label_onehot[:train_size]}, nb_epoch=1)
+        train_probs = model.predict({'sent1': C1_ind[:train_size], 'sent2': C2_ind[:train_size]})['output']
+        valid_probs = model.predict({'sent1': C1_ind[train_size:], 'sent2': C2_ind[train_size:]})['output']
+        train_preds = numpy.argmax(train_probs, axis=1)
+        train_labels = numpy.argmax(label_onehot[:train_size], axis=1)
+        valid_preds = numpy.argmax(valid_probs, axis=1)
+        valid_labels = numpy.argmax(label_onehot[train_size:], axis=1)
+        print >>sys.stderr, "Train accuracy", sum(train_preds == train_labels) / float(len(train_preds))
+        print >>sys.stderr, "Valid accuracy", sum(valid_preds == valid_labels) / float(len(valid_preds))
     else:
+      print >>sys.stderr, "Using traditional LSTM"
       model.add_input(name='sent1', input_shape=S1_ind.shape[1:], dtype='int')
       model.add_input(name='sent2', input_shape=S2_ind.shape[1:], dtype='int')
       embedding = Embedding(input_dim=num_words, output_dim=word_dim)
@@ -134,27 +139,36 @@ class EntailmentModel(object):
       model.add_node(Dense(output_dim=num_label_types, activation='softmax'), name='label_probs', inputs=['sent1_lstm', 'sent2_lstm'], merge_mode='concat')
       model.add_output(name='output', input='label_probs')
       model.compile(optimizer='adam', loss={'output': 'categorical_crossentropy'})
-      model.fit({'sent1': S1_ind[:train_size], 'sent2': S2_ind[:train_size], 'output': label_onehot[:train_size]}, nb_epoch=20)
-      train_probs = model.predict({'sent1': S1_ind[:train_size], 'sent2': S2_ind[:train_size]})['output']
-      valid_probs = model.predict({'sent1': S1_ind[train_size:], 'sent2': S2_ind[train_size:]})['output']
-      train_preds = numpy.argmax(train_probs, axis=1)
-      train_labels = numpy.argmax(label_onehot[:train_size], axis=1)
-      valid_preds = numpy.argmax(valid_probs, axis=1)
-      valid_labels = numpy.argmax(label_onehot[train_size:], axis=1)
-      print >>sys.stderr, "Train accuracy", sum(train_preds == train_labels) / float(len(train_preds))
-      print >>sys.stderr, "Valid accuracy", sum(valid_preds == valid_labels) / float(len(valid_preds))
+      for _ in range(20):
+        model.fit({'sent1': S1_ind[:train_size], 'sent2': S2_ind[:train_size], 'output': label_onehot[:train_size]}, nb_epoch=1)
+        train_probs = model.predict({'sent1': S1_ind[:train_size], 'sent2': S2_ind[:train_size]})['output']
+        valid_probs = model.predict({'sent1': S1_ind[train_size:], 'sent2': S2_ind[train_size:]})['output']
+        train_preds = numpy.argmax(train_probs, axis=1)
+        train_labels = numpy.argmax(label_onehot[:train_size], axis=1)
+        valid_preds = numpy.argmax(valid_probs, axis=1)
+        valid_labels = numpy.argmax(label_onehot[train_size:], axis=1)
+        print >>sys.stderr, "Train accuracy", sum(train_preds == train_labels) / float(len(train_preds))
+        print >>sys.stderr, "Valid accuracy", sum(valid_preds == valid_labels) / float(len(valid_preds))
 
 if __name__ == "__main__":
-  em = EntailmentModel(sys.argv[1])
+  argparser = argparse.ArgumentParser(description="Train entailment model using ontoLSTM or traditional LSTM")
+  argparser.add_argument('repfile', metavar='REP-FILE', type=str, help="Gzipped word embedding file")
+  argparser.add_argument('train_file', metavar='TRAIN-FILE', type=str, help="TSV file with label, premise, hypothesis in three columns")
+  argparser.add_argument('--use_onto_lstm', help="Use ontoLSTM. If this flag is not set, will use traditional LSTM", action='store_true')
+  args = argparser.parse_args()
+  em = EntailmentModel(args.repfile)
   tagged_sentences = []
   label_map = {}
   label_ind = []
-  for line in open(sys.argv[2]):
+  for line in open(args.train_file):
     lnstrp = line.strip()
     label, tagged_sentence = lnstrp.split("\t")
     if label not in label_map:
       label_map[label] = len(label_map)
     label_ind.append(label_map[label])
     tagged_sentences.append(tagged_sentence)
+  sentence_labels = zip(tagged_sentences, label_ind)
+  random.shuffle(sentence_labels)
+  tagged_sentences, label_ind = zip(*sentence_labels)
   _, (S1_ind, S2_ind), (C1_ind, C2_ind) = em.read_sentences(tagged_sentences)
-  em.train(S1_ind, S2_ind, C1_ind, C2_ind, label_ind, len(label_map), synLSTM=True) 
+  em.train(S1_ind, S2_ind, C1_ind, C2_ind, label_ind, len(label_map), ontoLSTM=args.use_onto_lstm) 

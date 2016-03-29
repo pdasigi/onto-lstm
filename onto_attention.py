@@ -121,7 +121,8 @@ class OntoAttentionLSTM(Recurrent):
     def step(self, x_cs, states):
         assert len(states) == 2
         # Before the step function is called, the original input is dimshuffled to have (time, samples, concepts, concept_dim)
-        x = K.mean(x_cs, axis=1) # shape is (samples, concepts, concept_dim)
+        # So shape of x_cs is (samples, concepts, concept_dim)
+        x = K.mean(x_cs, axis=1) # shape of x is (samples, concept_dim)
         h_tm1 = states[0]
         c_tm1 = states[1]
 

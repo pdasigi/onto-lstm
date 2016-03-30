@@ -1,32 +1,11 @@
 from keras.layers.recurrent import Recurrent
 from keras import activations, initializations
 from keras import backend as K
-
+import theano
 
 class OntoAttentionLSTM(Recurrent):
-    '''Long-Short Term Memory unit - Hochreiter 1997.
-
-    For a step-by-step description of the algorithm, see
-    [this tutorial](http://deeplearning.net/tutorial/lstm.html).
-
-    # Arguments
-        output_dim: dimension of the internal projections and the final output.
-        init: weight initialization function.
-            Can be the name of an existing function (str),
-            or a Theano function (see: [initializations](../initializations.md)).
-        inner_init: initialization function of the inner cells.
-        forget_bias_init: initialization function for the bias of the forget gate.
-            [Jozefowicz et al.](http://www.jmlr.org/proceedings/papers/v37/jozefowicz15.pdf)
-            recommend initializing with ones.
-        activation: activation function.
-            Can be the name of an existing function (str),
-            or a Theano function (see: [activations](../activations.md)).
-        inner_activation: activation function for the inner cells.
-
-    # References
-        - [Long short-term memory](http://deeplearning.cs.cmu.edu/pdfs/Hochreiter97_lstm.pdf) (original 1997 paper)
-        - [Learning to forget: Continual prediction with LSTM](http://www.mitpressjournals.org/doi/pdf/10.1162/089976600300015015)
-        - [Supervised sequence labelling with recurrent neural networks](http://www.cs.toronto.edu/~graves/preprint.pdf)
+    '''
+    Modification of LSTM implementation in Keras to take a hierarchy as input (matrix instead of a vector at each time step), and take a weighted average of it using attention mechanism.
     '''
     input_ndim = 4
     
@@ -35,7 +14,8 @@ class OntoAttentionLSTM(Recurrent):
                  forget_bias_init='one', activation='tanh',
                  inner_activation='hard_sigmoid', weights=None,
                  return_sequences=False, go_backwards=False, stateful=False,
-                 input_dim=None, num_hyps=None, input_length=None, **kwargs):
+                 input_dim=None, num_hyps=None, input_length=None, use_attention=False, 
+                 **kwargs):
         self.output_dim = output_dim
         self.init = initializations.get(init)
         self.inner_init = initializations.get(inner_init)
@@ -51,6 +31,7 @@ class OntoAttentionLSTM(Recurrent):
         self.input_dim = input_dim
         self.num_hyps = num_hyps
         self.input_length = input_length
+        self.use_attention = use_attention
         if self.input_dim:
             kwargs['input_shape'] = (self.input_length, self.num_hyps, self.input_dim)
         super(Recurrent, self).__init__(**kwargs)
@@ -88,6 +69,12 @@ class OntoAttentionLSTM(Recurrent):
                                   self.W_f, self.U_f, self.b_f,
                                   self.W_o, self.U_o, self.b_o]
 
+        if self.use_attention:
+            # Following are the attention parameters
+            self.P_att = self.inner_init((input_dim+self.output_dim, self.output_dim))
+            self.s_att = self.init((self.output_dim,))
+            self.trainable_weights.extend([self.P_att, self.s_att])
+
         if self.initial_weights is not None:
             self.set_weights(self.initial_weights)
             del self.initial_weights
@@ -120,12 +107,22 @@ class OntoAttentionLSTM(Recurrent):
 
     def step(self, x_cs, states):
         assert len(states) == 2
-        # Before the step function is called, the original input is dimshuffled to have (time, samples, concepts, concept_dim)
-        # So shape of x_cs is (samples, concepts, concept_dim)
-        x = K.mean(x_cs, axis=1) # shape of x is (samples, concept_dim)
+ 
         h_tm1 = states[0]
         c_tm1 = states[1]
 
+        # Before the step function is called, the original input is dimshuffled to have (time, samples, concepts, concept_dim)
+        # So shape of x_cs is (samples, concepts, concept_dim)
+        if self.use_attention:
+            project_concept = lambda x_c, st: K.sigmoid(K.dot(K.concatenate([x_c, st], axis=1), self.P_att))
+            # TODO: Make the following line not specific to theano
+            x_proj, _ = theano.scan(fn=project_concept, sequences=[x_cs.dimshuffle(1,0,2)], non_sequences=c_tm1)
+            att = K.softmax(K.T.tensordot(x_proj.dimshuffle(1,0,2), self.s_att, axes=(2,0)))
+            # Batched tensordot probably uses scan internally anyway. Sigh!
+            x = K.T.batched_tensordot(x_cs, att, axes=(1,1))
+        else:
+            x = K.mean(x_cs, axis=1) # shape of x is (samples, concept_dim)
+        
         x_i = K.dot(x, self.W_i) + self.b_i
         x_f = K.dot(x, self.W_f) + self.b_f
         x_c = K.dot(x, self.W_c) + self.b_c

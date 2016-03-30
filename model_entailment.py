@@ -95,7 +95,7 @@ class EntailmentModel(object):
         C2_ind[i][-sent2len+j][-len(syn_ind):] = syn_ind
     return (S1, S2), (S1_ind, S2_ind), (C1_ind, C2_ind)
 
-  def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, ontoLSTM=False):
+  def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, ontoLSTM=False, use_attention=False):
     word_dim = 50
     assert S1_ind.shape == S2_ind.shape
     assert C1_ind.shape == C2_ind.shape
@@ -113,7 +113,7 @@ class EntailmentModel(object):
       model.add_input(name='sent2', input_shape=C2_ind.shape[1:])
       embedding = HigherOrderEmbedding(input_dim=num_syns, output_dim=word_dim)
       model.add_shared_node(embedding, name='sent_embedding', inputs=['sent1', 'sent2'], outputs=['sent1_embedding', 'sent2_embedding'])
-      lstm = OntoAttentionLSTM(input_dim=word_dim, output_dim=word_dim/2, input_length=length, num_hyps=self.max_hyps_per_word)
+      lstm = OntoAttentionLSTM(input_dim=word_dim, output_dim=word_dim/2, input_length=length, num_hyps=self.max_hyps_per_word, use_attention=use_attention)
       model.add_shared_node(lstm, name='sent_lstm', inputs=['sent1_embedding', 'sent2_embedding'], outputs=['sent1_lstm', 'sent2_lstm'])
       model.add_node(Dense(output_dim=num_label_types, activation='softmax'), name='label_probs', inputs=['sent1_lstm', 'sent2_lstm'], merge_mode='concat')
       model.add_output(name='output', input='label_probs')
@@ -155,6 +155,7 @@ if __name__ == "__main__":
   argparser.add_argument('repfile', metavar='REP-FILE', type=str, help="Gzipped word embedding file")
   argparser.add_argument('train_file', metavar='TRAIN-FILE', type=str, help="TSV file with label, premise, hypothesis in three columns")
   argparser.add_argument('--use_onto_lstm', help="Use ontoLSTM. If this flag is not set, will use traditional LSTM", action='store_true')
+  argparser.add_argument('--use_attention', help="Use attention in ontoLSTM. If this flag is not set, will use average concept representations", action='store_true')
   args = argparser.parse_args()
   em = EntailmentModel(args.repfile)
   tagged_sentences = []
@@ -171,4 +172,4 @@ if __name__ == "__main__":
   random.shuffle(sentence_labels)
   tagged_sentences, label_ind = zip(*sentence_labels)
   _, (S1_ind, S2_ind), (C1_ind, C2_ind) = em.read_sentences(tagged_sentences)
-  em.train(S1_ind, S2_ind, C1_ind, C2_ind, label_ind, len(label_map), ontoLSTM=args.use_onto_lstm) 
+  em.train(S1_ind, S2_ind, C1_ind, C2_ind, label_ind, len(label_map), ontoLSTM=args.use_onto_lstm, use_attention=args.use_attention) 

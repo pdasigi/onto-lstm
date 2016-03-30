@@ -6,7 +6,7 @@ import random
 from index_data import DataProcessor
 from onto_attention import OntoAttentionLSTM
 from keras.models import Graph
-from keras.layers.core import Activation, Dense
+from keras.layers.core import Activation, Dense, Dropout
 from keras_extensions import HigherOrderEmbedding
 from keras.layers.recurrent import LSTM
 from keras.layers.embeddings import Embedding
@@ -113,10 +113,13 @@ class EntailmentModel(object):
       model.add_input(name='sent2', input_shape=C2_ind.shape[1:])
       embedding = HigherOrderEmbedding(input_dim=num_syns, output_dim=word_dim)
       model.add_shared_node(embedding, name='sent_embedding', inputs=['sent1', 'sent2'], outputs=['sent1_embedding', 'sent2_embedding'])
+      model.add_node(Dropout(0.5), name="sent1_dropout", input='sent1_embedding')
+      model.add_node(Dropout(0.5), name="sent2_dropout", input='sent2_embedding')
       lstm = OntoAttentionLSTM(input_dim=word_dim, output_dim=word_dim/2, input_length=length, num_hyps=self.max_hyps_per_word, use_attention=use_attention)
-      model.add_shared_node(lstm, name='sent_lstm', inputs=['sent1_embedding', 'sent2_embedding'], outputs=['sent1_lstm', 'sent2_lstm'])
+      model.add_shared_node(lstm, name='sent_lstm', inputs=['sent1_dropout', 'sent2_dropout'], outputs=['sent1_lstm', 'sent2_lstm'])
       model.add_node(Dense(output_dim=num_label_types, activation='softmax'), name='label_probs', inputs=['sent1_lstm', 'sent2_lstm'], merge_mode='concat')
       model.add_output(name='output', input='label_probs')
+      print >>sys.stderr, model.summary()
       model.compile(optimizer='adam', loss={'output': 'categorical_crossentropy'})
       for _ in range(20):
         model.fit({'sent1': C1_ind[:train_size], 'sent2': C2_ind[:train_size], 'output': label_onehot[:train_size]}, nb_epoch=1)
@@ -134,10 +137,13 @@ class EntailmentModel(object):
       model.add_input(name='sent2', input_shape=S2_ind.shape[1:], dtype='int')
       embedding = Embedding(input_dim=num_words, output_dim=word_dim)
       model.add_shared_node(embedding, name='sent_embedding', inputs=['sent1', 'sent2'], outputs=['sent1_embedding', 'sent2_embedding'])
+      model.add_node(Dropout(0.5), name="sent1_dropout", input='sent1_embedding')
+      model.add_node(Dropout(0.5), name="sent2_dropout", input='sent2_embedding')
       lstm = LSTM(input_dim=word_dim, output_dim=word_dim/2, input_length=length)
-      model.add_shared_node(lstm, name='sent_lstm', inputs=['sent1_embedding', 'sent2_embedding'], outputs=['sent1_lstm', 'sent2_lstm'])
+      model.add_shared_node(lstm, name='sent_lstm', inputs=['sent1_dropout', 'sent2_dropout'], outputs=['sent1_lstm', 'sent2_lstm'])
       model.add_node(Dense(output_dim=num_label_types, activation='softmax'), name='label_probs', inputs=['sent1_lstm', 'sent2_lstm'], merge_mode='concat')
       model.add_output(name='output', input='label_probs')
+      print >>sys.stderr, model.summary()
       model.compile(optimizer='adam', loss={'output': 'categorical_crossentropy'})
       for _ in range(20):
         model.fit({'sent1': S1_ind[:train_size], 'sent2': S2_ind[:train_size], 'output': label_onehot[:train_size]}, nb_epoch=1)

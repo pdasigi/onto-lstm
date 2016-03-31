@@ -24,7 +24,6 @@ class OntoAttentionLSTM(Recurrent):
         self.inner_activation = activations.get(inner_activation)
         # Initializations from Recurrent to avoid calling its constructor.
         self.return_sequences = return_sequences
-        self.initial_weights = weights
         self.go_backwards = go_backwards
         self.stateful = stateful
 
@@ -32,6 +31,7 @@ class OntoAttentionLSTM(Recurrent):
         self.num_hyps = num_hyps
         self.input_length = input_length
         self.use_attention = use_attention
+        self.initial_weights = weights
         if self.input_dim:
             kwargs['input_shape'] = (self.input_length, self.num_hyps, self.input_dim)
         super(Recurrent, self).__init__(**kwargs)
@@ -45,8 +45,8 @@ class OntoAttentionLSTM(Recurrent):
         if self.stateful:
             self.reset_states()
         else:
-            # initial states: 2 all-zero tensor of shape (output_dim)
-            self.states = [None, None]
+            # initial states: 2 all-zero tensor of shape (output_dim), and 1 all-zero tensor of shape (num_hyps)
+            self.states = [None, None, None]
 
         self.W_i = self.init((input_dim, self.output_dim))
         self.U_i = self.inner_init((self.output_dim, self.output_dim))
@@ -77,16 +77,19 @@ class OntoAttentionLSTM(Recurrent):
 
         if self.initial_weights is not None:
             self.set_weights(self.initial_weights)
-            del self.initial_weights
+            #del self.initial_weights
 
     # Reimplementing because ndim of X is 4
     def get_initial_states(self, X):
         # build an all-zero tensor of shape (samples, output_dim)
         initial_state = K.zeros_like(X)  # (samples, timesteps, num_concepts, input_dim)
         initial_state = K.sum(initial_state, axis=(1, 2))  # (samples, input_dim)
-        reducer = K.zeros((self.input_dim, self.output_dim))
-        initial_state = K.dot(initial_state, reducer)  # (samples, output_dim)
-        initial_states = [initial_state for _ in range(len(self.states))]
+        reducer1 = K.zeros((self.input_dim, self.output_dim))
+        reducer2 = K.zeros((self.input_dim, self.num_hyps))
+        initial_state1 = K.dot(initial_state, reducer1)  # (samples, output_dim)
+        initial_state2 = K.dot(initial_state, reducer2)  # (samples, num_hyps)
+        #initial_states = [initial_state for _ in range(len(self.states))]
+        initial_states = [initial_state1, initial_state1, initial_state2]
         return initial_states
 
     def reset_states(self):
@@ -101,15 +104,21 @@ class OntoAttentionLSTM(Recurrent):
                         np.zeros((input_shape[0], self.output_dim)))
             K.set_value(self.states[1],
                         np.zeros((input_shape[0], self.output_dim)))
+            K.set_value(self.states[2],
+                        np.zeros((input_shape[0], self.num_hyps)))
         else:
             self.states = [K.zeros((input_shape[0], self.output_dim)),
-                           K.zeros((input_shape[0], self.output_dim))]
+                           K.zeros((input_shape[0], self.output_dim)),
+                           K.zeros((input_shape[0], self.num_hyps))]
 
-    def step(self, x_cs, states):
-        assert len(states) == 2
+    # There are two step functions, one for output and another for attention below. Both call this function.
+    def _step(self, x_cs, states):
+        assert len(states) == 3
  
         h_tm1 = states[0]
         c_tm1 = states[1]
+        # TODO: Use attention from previous state for computing current attention?
+        att_tm1 = states[2] 
 
         # Before the step function is called, the original input is dimshuffled to have (time, samples, concepts, concept_dim)
         # So shape of x_cs is (samples, concepts, concept_dim)
@@ -121,6 +130,7 @@ class OntoAttentionLSTM(Recurrent):
             # Batched tensordot probably uses scan internally anyway. Sigh!
             x = K.T.batched_tensordot(x_cs, att, axes=(1,1))
         else:
+            att = att_tm1 # Continue propogating matrix of zeros for attention
             x = K.mean(x_cs, axis=1) # shape of x is (samples, concept_dim)
         
         x_i = K.dot(x, self.W_i) + self.b_i
@@ -133,7 +143,15 @@ class OntoAttentionLSTM(Recurrent):
         c = f * c_tm1 + i * self.activation(x_c + K.dot(h_tm1, self.U_c))
         o = self.inner_activation(x_o + K.dot(h_tm1, self.U_o))
         h = o * self.activation(c)
-        return h, [h, c]
+        return h, c, att
+        
+    def step(self, x_cs, states):
+        h, c, att = self._step(x_cs, states)
+        return h, [h, c, att]
+
+    def att_step(self, x_cs, states):
+        h, c, att = self._step(x_cs, states)  
+        return att, [h, c, att]
 
     # Had to reimplement the following function only to avoid asserting ndim(X) == 3!
     def get_output(self, train=False):
@@ -160,6 +178,23 @@ class OntoAttentionLSTM(Recurrent):
             return outputs
         else:
             return last_output
+
+    def get_attention(self):
+        # input shape: (nb_samples, time (padded with zeros), num_concepts, input_dim)
+        X = self.get_input(False)
+        mask = self.get_input_mask(False)
+
+        assert K.ndim(X) == 4
+        if self.stateful:
+            initial_states = self.states
+        else:
+            initial_states = self.get_initial_states(X)
+
+        _, attention, _ = K.rnn(self.att_step, X,
+                                initial_states,
+                                go_backwards=self.go_backwards,
+                                mask=mask)
+        return attention
 
     def get_config(self):
         config = {"output_dim": self.output_dim,

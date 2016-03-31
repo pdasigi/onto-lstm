@@ -3,9 +3,10 @@ import numpy
 import gzip
 import argparse
 import random
+import theano
 from index_data import DataProcessor
 from onto_attention import OntoAttentionLSTM
-from keras.models import Graph
+from keras.models import Graph, Sequential
 from keras.layers.core import Activation, Dense, Dropout
 from keras_extensions import HigherOrderEmbedding
 from keras.layers.recurrent import LSTM
@@ -32,6 +33,7 @@ class EntailmentModel(object):
         self.word_rep_min = vec_min
       self.word_rep[word] = vec
     self.word_dim = len(vec)
+    self.model = None
 
   def read_sentences(self, tagged_sentences, sentlenlimit=None):
     num_sentences = len(tagged_sentences)
@@ -95,11 +97,10 @@ class EntailmentModel(object):
         C2_ind[i][-sent2len+j][-len(syn_ind):] = syn_ind
     return (S1, S2), (S1_ind, S2_ind), (C1_ind, C2_ind)
 
-  def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, ontoLSTM=False, use_attention=False):
+  def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, train_size,ontoLSTM=False, use_attention=False):
     word_dim = 50
     assert S1_ind.shape == S2_ind.shape
     assert C1_ind.shape == C2_ind.shape
-    train_size = int(0.9 * C1_ind.shape[0])
     num_words = len(self.dp.word_index)
     num_syns = len(self.dp.synset_index)
     length = C1_ind.shape[1]
@@ -131,6 +132,7 @@ class EntailmentModel(object):
         valid_labels = numpy.argmax(label_onehot[train_size:], axis=1)
         print >>sys.stderr, "Train accuracy", sum(train_preds == train_labels) / float(len(train_preds))
         print >>sys.stderr, "Valid accuracy", sum(valid_preds == valid_labels) / float(len(valid_preds))
+      self.model = model
     else:
       print >>sys.stderr, "Using traditional LSTM"
       model.add_input(name='sent1', input_shape=S1_ind.shape[1:], dtype='int')
@@ -155,6 +157,32 @@ class EntailmentModel(object):
         valid_labels = numpy.argmax(label_onehot[train_size:], axis=1)
         print >>sys.stderr, "Train accuracy", sum(train_preds == train_labels) / float(len(train_preds))
         print >>sys.stderr, "Valid accuracy", sum(valid_preds == valid_labels) / float(len(valid_preds))
+      self.model = model
+
+  def get_attention(self, C_ind):
+    if not self.model:
+      raise RuntimeError, "Model not trained!"
+    model_embedding = None
+    model_lstm = None
+    for node_name in self.model.nodes:
+      if node_name == "sent_embedding":
+        model_embedding = self.model.nodes[node_name]
+      if node_name == "sent_lstm":
+        model_lstm = self.model.nodes[node_name].layer
+    if not model_embedding or not model_lstm:
+      raise RuntimeError, "Did not find the layers expected"
+    embedding_weights = model_embedding.get_weights()
+    lstm_weights = model_lstm.get_weights()
+    att_model = Sequential()
+    embed_in_dim, embed_out_dim = embedding_weights[0].shape
+    att_model.add(HigherOrderEmbedding(input_dim=embed_in_dim, output_dim=embed_out_dim, weights=embedding_weights)) 
+    att_model.add(OntoAttentionLSTM(input_dim=embed_out_dim, output_dim=embed_out_dim/2, input_length=model_lstm.input_length, num_hyps=self.max_hyps_per_word, use_attention=model_lstm.use_attention, weights=lstm_weights))
+    sym_input = att_model.get_input()
+    sym_output = att_model.layers[-1].get_attention()
+    att_f = theano.function([sym_input], sym_output)
+    C_att = att_f(C_ind)
+    print >>sys.stderr, "Got attention values. Input, output shapes:", C_ind.shape, C_att.shape
+    return C_att
 
 if __name__ == "__main__":
   argparser = argparse.ArgumentParser(description="Train entailment model using ontoLSTM or traditional LSTM")
@@ -162,6 +190,7 @@ if __name__ == "__main__":
   argparser.add_argument('train_file', metavar='TRAIN-FILE', type=str, help="TSV file with label, premise, hypothesis in three columns")
   argparser.add_argument('--use_onto_lstm', help="Use ontoLSTM. If this flag is not set, will use traditional LSTM", action='store_true')
   argparser.add_argument('--use_attention', help="Use attention in ontoLSTM. If this flag is not set, will use average concept representations", action='store_true')
+  argparser.add_argument('--show_attention', type=str, help="Print attention values of the validation data in the given file")
   args = argparser.parse_args()
   em = EntailmentModel(args.repfile)
   tagged_sentences = []
@@ -178,4 +207,26 @@ if __name__ == "__main__":
   random.shuffle(sentence_labels)
   tagged_sentences, label_ind = zip(*sentence_labels)
   _, (S1_ind, S2_ind), (C1_ind, C2_ind) = em.read_sentences(tagged_sentences)
-  em.train(S1_ind, S2_ind, C1_ind, C2_ind, label_ind, len(label_map), ontoLSTM=args.use_onto_lstm, use_attention=args.use_attention) 
+  train_size = int(0.9 * C1_ind.shape[0])
+  em.train(S1_ind, S2_ind, C1_ind, C2_ind, label_ind, len(label_map), train_size, ontoLSTM=args.use_onto_lstm, use_attention=args.use_attention)
+
+  if args.show_attention is not None:
+    rev_synset_ind = {ind: syn for (syn, ind) in em.dp.synset_index.items()}
+    C_ind = numpy.concatenate([C1_ind[train_size:], C2_ind[train_size:]])
+    C_att = em.get_attention(C_ind)
+    C1_att, C2_att = numpy.split(C_att, 2)
+    # Concatenate sentence 1 and 2 in each data point
+    C_sj_ind = numpy.concatenate([C1_ind[train_size:], C2_ind[train_size:]], axis=1)
+    C_sj_att = numpy.concatenate([C1_att, C2_att], axis=1)
+    outfile = open(args.show_attention, "w")
+    for i, (sent, sent_c_inds, sent_c_atts) in enumerate(zip(tagged_sentences[train_size:], C_sj_ind, C_sj_att)):
+      print >>outfile, "SENT %d: %s"%(i, sent)
+      for word_c_inds, word_c_atts in zip(sent_c_inds, sent_c_atts):
+        if sum(word_c_inds) == 0:
+          continue
+        for c_ind, c_att in zip(word_c_inds, word_c_atts):
+          if c_ind == 0:
+            continue
+          print >>outfile, rev_synset_ind[c_ind], c_att 
+        print >>outfile
+      print >>outfile

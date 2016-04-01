@@ -7,8 +7,8 @@ class DataProcessor(object):
     self.syn_path_cutoff = syn_path_cutoff
 
     self.thing_prons = ['it', 'which', 'that', 'this', 'what', 'these', 'itself', 'something', 'anything', 'everything'] # thing
-    self.male_prons = ['he', 'him', 'himself', 'his'] # man.n.01
-    self.female_prons = ['she', 'her', 'herself'] # woman.m.01
+    self.male_prons = ['he', 'him', 'himself'] # man.n.01
+    self.female_prons = ['she', 'her', 'herself'] # woman.n.01
     self.people_prons = ['they', 'them', 'themselves', 'we', 'ourselves', 'yourselves'] # people.n.01, people.n.03
     self.person_prons = ['you', 'i', 'who', 'whom', 'whoever', 'anyone', 'everyone', 'myself', 'yourself'] # person.n.01
     self.word_hypernym_map = {}
@@ -64,7 +64,7 @@ class DataProcessor(object):
       # The argument looks like an year
       syns += wn.synsets("year", "n") + wn.synsets("number", "n")
       #hypernyms = list(self.year_hypernyms)
-    elif re.match('^[0-9,-]+', word) is not None:
+    elif re.match('^[0-9]+[.,-]?[0-9]*', word) is not None:
       syns += wn.synsets("number", "n")
       #hypernyms = list(self.number_hypernyms)
     #elif word[0].isupper():

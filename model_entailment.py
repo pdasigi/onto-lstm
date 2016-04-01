@@ -97,7 +97,7 @@ class EntailmentModel(object):
         C2_ind[i][-sent2len+j][-len(syn_ind):] = syn_ind
     return (S1, S2), (S1_ind, S2_ind), (C1_ind, C2_ind)
 
-  def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, train_size,ontoLSTM=False, use_attention=False):
+  def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, train_size,ontoLSTM=False, use_attention=False, num_epochs=20):
     word_dim = 50
     assert S1_ind.shape == S2_ind.shape
     assert C1_ind.shape == C2_ind.shape
@@ -122,7 +122,7 @@ class EntailmentModel(object):
       model.add_output(name='output', input='label_probs')
       print >>sys.stderr, model.summary()
       model.compile(optimizer='adam', loss={'output': 'categorical_crossentropy'})
-      for _ in range(20):
+      for _ in range(num_epochs):
         model.fit({'sent1': C1_ind[:train_size], 'sent2': C2_ind[:train_size], 'output': label_onehot[:train_size]}, nb_epoch=1)
         train_probs = model.predict({'sent1': C1_ind[:train_size], 'sent2': C2_ind[:train_size]})['output']
         valid_probs = model.predict({'sent1': C1_ind[train_size:], 'sent2': C2_ind[train_size:]})['output']
@@ -147,7 +147,7 @@ class EntailmentModel(object):
       model.add_output(name='output', input='label_probs')
       print >>sys.stderr, model.summary()
       model.compile(optimizer='adam', loss={'output': 'categorical_crossentropy'})
-      for _ in range(20):
+      for _ in range(num_epochs):
         model.fit({'sent1': S1_ind[:train_size], 'sent2': S2_ind[:train_size], 'output': label_onehot[:train_size]}, nb_epoch=1)
         train_probs = model.predict({'sent1': S1_ind[:train_size], 'sent2': S2_ind[:train_size]})['output']
         valid_probs = model.predict({'sent1': S1_ind[train_size:], 'sent2': S2_ind[train_size:]})['output']
@@ -189,10 +189,13 @@ if __name__ == "__main__":
   argparser.add_argument('repfile', metavar='REP-FILE', type=str, help="Gzipped word embedding file")
   argparser.add_argument('train_file', metavar='TRAIN-FILE', type=str, help="TSV file with label, premise, hypothesis in three columns")
   argparser.add_argument('--use_onto_lstm', help="Use ontoLSTM. If this flag is not set, will use traditional LSTM", action='store_true')
+  argparser.add_argument('--num_senses', type=int, help="Number of senses per word if using OntoLSTM (default 2)", default=2)
+  argparser.add_argument('--num_hyps', type=int, help="Number of hypernyms per sense if using OntoLSTM (default 5)", default=5)
   argparser.add_argument('--use_attention', help="Use attention in ontoLSTM. If this flag is not set, will use average concept representations", action='store_true')
-  argparser.add_argument('--show_attention', type=str, help="Print attention values of the validation data in the given file")
+  argparser.add_argument('--attention_output', type=str, help="Print attention values of the validation data in the given file")
+  argparser.add_argument('--num_epochs', type=int, help="Number of epochs (default 20)", default=20)
   args = argparser.parse_args()
-  em = EntailmentModel(args.repfile)
+  em = EntailmentModel(args.repfile, num_senses=args.num_senses, num_hyps=args.num_hyps)
   tagged_sentences = []
   label_map = {}
   label_ind = []
@@ -208,9 +211,9 @@ if __name__ == "__main__":
   tagged_sentences, label_ind = zip(*sentence_labels)
   _, (S1_ind, S2_ind), (C1_ind, C2_ind) = em.read_sentences(tagged_sentences)
   train_size = int(0.9 * C1_ind.shape[0])
-  em.train(S1_ind, S2_ind, C1_ind, C2_ind, label_ind, len(label_map), train_size, ontoLSTM=args.use_onto_lstm, use_attention=args.use_attention)
+  em.train(S1_ind, S2_ind, C1_ind, C2_ind, label_ind, len(label_map), train_size, ontoLSTM=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs)
 
-  if args.show_attention is not None:
+  if args.attention_output is not None:
     rev_synset_ind = {ind: syn for (syn, ind) in em.dp.synset_index.items()}
     C_ind = numpy.concatenate([C1_ind[train_size:], C2_ind[train_size:]])
     C_att = em.get_attention(C_ind)
@@ -218,7 +221,7 @@ if __name__ == "__main__":
     # Concatenate sentence 1 and 2 in each data point
     C_sj_ind = numpy.concatenate([C1_ind[train_size:], C2_ind[train_size:]], axis=1)
     C_sj_att = numpy.concatenate([C1_att, C2_att], axis=1)
-    outfile = open(args.show_attention, "w")
+    outfile = open(args.attention_output, "w")
     for i, (sent, sent_c_inds, sent_c_atts) in enumerate(zip(tagged_sentences[train_size:], C_sj_ind, C_sj_att)):
       print >>outfile, "SENT %d: %s"%(i, sent)
       for word_c_inds, word_c_atts in zip(sent_c_inds, sent_c_atts):

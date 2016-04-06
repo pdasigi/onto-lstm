@@ -71,9 +71,10 @@ class OntoAttentionLSTM(Recurrent):
 
         if self.use_attention:
             # Following are the attention parameters
-            self.P_att = self.inner_init((input_dim+self.output_dim, self.output_dim))
+            self.P_syn_att = self.inner_init((input_dim, self.output_dim)) # Projection operator for synsets
+            self.P_cont_att = self.inner_init((self.output_dim, self.output_dim)) # Projection operator for hidden state (context)
             self.s_att = self.init((self.output_dim,))
-            self.trainable_weights.extend([self.P_att, self.s_att])
+            self.trainable_weights.extend([self.P_syn_att, self.P_cont_att, self.s_att])
 
         if self.initial_weights is not None:
             self.set_weights(self.initial_weights)
@@ -123,12 +124,15 @@ class OntoAttentionLSTM(Recurrent):
         # Before the step function is called, the original input is dimshuffled to have (time, samples, concepts, concept_dim)
         # So shape of x_cs is (samples, concepts, concept_dim)
         if self.use_attention:
-            project_concept = lambda x_c, st: K.sigmoid(K.dot(K.concatenate([x_c, st], axis=1), self.P_att))
+            #project_concept = lambda x_c, st: K.sigmoid(K.dot(K.concatenate([x_c, st], axis=1), self.P_att))
             # TODO: Make the following line not specific to theano
-            x_proj, _ = theano.scan(fn=project_concept, sequences=[x_cs.dimshuffle(1,0,2)], non_sequences=c_tm1)
+            #x_proj, _ = theano.scan(fn=project_concept, sequences=[x_cs.dimshuffle(1,0,2)], non_sequences=c_tm1)
+            syn_proj = K.T.tensordot(x_cs.dimshuffle(1,0,2), self.P_syn_att, axes=(2,0))
+            cont_proj = K.dot(c_tm1, self.P_cont_att)
+            x_proj = K.sigmoid(syn_proj + cont_proj)
             att = K.softmax(K.T.tensordot(x_proj.dimshuffle(1,0,2), self.s_att, axes=(2,0)))
-            # Batched tensordot probably uses scan internally anyway. Sigh!
-            x = K.T.batched_tensordot(x_cs, att, axes=(1,1))
+            # Batched dot probably uses scan internally anyway. Sigh!
+            x = K.T.batched_dot(att, x_cs)
         else:
             att = att_tm1 # Continue propogating matrix of zeros for attention
             x = K.mean(x_cs, axis=1) # shape of x is (samples, concept_dim)

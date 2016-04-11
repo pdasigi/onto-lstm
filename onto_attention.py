@@ -1,6 +1,7 @@
 from keras.layers.recurrent import Recurrent
 from keras import activations, initializations
 from keras import backend as K
+from theano.sandbox.cuda.blas import batched_dot as fast_batched_dot
 import theano
 
 class OntoAttentionLSTM(Recurrent):
@@ -131,8 +132,12 @@ class OntoAttentionLSTM(Recurrent):
             cont_proj = K.dot(c_tm1, self.P_cont_att)
             x_proj = K.sigmoid(syn_proj + cont_proj)
             att = K.softmax(K.T.tensordot(x_proj.dimshuffle(1,0,2), self.s_att, axes=(2,0)))
-            # Batched dot probably uses scan internally anyway. Sigh!
-            x = K.T.batched_dot(att, x_cs)
+            if theano.config.device == "gpu":
+                att_t3 = att.reshape((a.shape[0], 1, a.shape[1]))
+                x = fast_batched_dot(att_t3, x_cs)
+            else:
+                # Batched dot probably uses scan internally anyway. Sigh!
+                x = K.T.batched_dot(att, x_cs)
         else:
             att = att_tm1 # Continue propogating matrix of zeros for attention
             x = K.mean(x_cs, axis=1) # shape of x is (samples, concept_dim)

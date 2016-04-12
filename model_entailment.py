@@ -182,7 +182,7 @@ class EntailmentModel(object):
   def get_attention(self, C_ind, embedding=None):
     if not self.model:
       raise RuntimeError, "Model not trained!"
-    embedding_given = False if not embedding else True
+    embedding_given = False if embedding is None else True
     model_embedding = None
     model_lstm = None
     for node_name in self.model.nodes:
@@ -201,7 +201,9 @@ class EntailmentModel(object):
     if not embedding_given:
       embedding_weights = model_embedding.get_weights()
       embed_in_dim, embed_out_dim = embedding_weights[0].shape
-      att_model.add(HigherOrderEmbedding(input_dim=embed_in_dim, output_dim=embed_out_dim, weights=embedding_weights)) 
+      att_model.add(HigherOrderEmbedding(input_dim=embed_in_dim, output_dim=embed_out_dim, weights=embedding_weights))
+    else:
+      _, embed_out_dim = embedding.shape 
     att_model.add(OntoAttentionLSTM(input_dim=embed_out_dim, output_dim=embed_out_dim/2, input_length=model_lstm.input_length, num_hyps=self.max_hyps_per_word, use_attention=model_lstm.use_attention, weights=lstm_weights))
     sym_input = att_model.get_input()
     sym_output = att_model.layers[-1].get_attention()

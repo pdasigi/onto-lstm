@@ -97,7 +97,7 @@ class EntailmentModel(object):
         C2_ind[i][-sent2len+j][-len(syn_ind):] = syn_ind
     return (S1, S2), (S1_ind, S2_ind), (C1_ind, C2_ind)
 
-  def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, train_size,ontoLSTM=False, use_attention=False, num_epochs=20, embedding=None):
+  def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, train_size,ontoLSTM=False, use_attention=False, num_epochs=20, embedding=None, tune_embedding=True):
     word_dim = 50
     assert S1_ind.shape == S2_ind.shape
     assert C1_ind.shape == C2_ind.shape
@@ -110,12 +110,16 @@ class EntailmentModel(object):
     model = Graph()
     if ontoLSTM:
       print >>sys.stderr, "Using OntoLSTM"
-      if embedding is None:
+      if tune_embedding:
         model.add_input(name='sent1', input_shape=C1_ind.shape[1:])
         model.add_input(name='sent2', input_shape=C2_ind.shape[1:])
-        embedding = HigherOrderEmbedding(input_dim=num_syns, output_dim=word_dim)
-        model.add_shared_node(embedding, name='sent_embedding', inputs=['sent1', 'sent2'], outputs=['sent1_embedding', 'sent2_embedding'])
+        if embedding is None:
+          embedding_layer = HigherOrderEmbedding(input_dim=num_syns, output_dim=word_dim)
+        else:
+          embedding_layer = HigherOrderEmbedding(input_dim=num_syns, output_dim=word_dim, weights=[embedding])
+        model.add_shared_node(embedding_layer, name='sent_embedding', inputs=['sent1', 'sent2'], outputs=['sent1_embedding', 'sent2_embedding'])
       else:
+        assert embedding is not None, "If you wish to fix the embedding (tune_embedding == False), initialize it (embedding should not be None)"
         embed_dim = embedding.shape[1]
         model.add_input(name='sent1_embedding', input_shape=(C1_ind.shape[1], C1_ind.shape[2], embed_dim))
         model.add_input(name='sent2_embedding', input_shape=(C2_ind.shape[1], C2_ind.shape[2], embed_dim))
@@ -134,7 +138,7 @@ class EntailmentModel(object):
         C1_ind_valid = C1_ind[train_size:]
         C2_ind_valid = C2_ind[train_size:]
         label_valid = label_onehot[train_size:]
-        if embedding is not None:
+        if not tune_embedding:
           C1_train = embedding[C1_ind_train]
           C2_train = embedding[C2_ind_train]
           C1_valid = embedding[C1_ind_valid]
@@ -157,8 +161,8 @@ class EntailmentModel(object):
       print >>sys.stderr, "Using traditional LSTM"
       model.add_input(name='sent1', input_shape=S1_ind.shape[1:], dtype='int')
       model.add_input(name='sent2', input_shape=S2_ind.shape[1:], dtype='int')
-      embedding = Embedding(input_dim=num_words, output_dim=word_dim)
-      model.add_shared_node(embedding, name='sent_embedding', inputs=['sent1', 'sent2'], outputs=['sent1_embedding', 'sent2_embedding'])
+      embedding_layer = Embedding(input_dim=num_words, output_dim=word_dim)
+      model.add_shared_node(embedding_layer, name='sent_embedding', inputs=['sent1', 'sent2'], outputs=['sent1_embedding', 'sent2_embedding'])
       model.add_node(Dropout(0.5), name="sent1_dropout", input='sent1_embedding')
       model.add_node(Dropout(0.5), name="sent2_dropout", input='sent2_embedding')
       lstm = LSTM(input_dim=word_dim, output_dim=word_dim/2, input_length=length)
@@ -208,7 +212,7 @@ class EntailmentModel(object):
     sym_input = att_model.get_input()
     sym_output = att_model.layers[-1].get_attention()
     att_f = theano.function([sym_input], sym_output)
-    C_att = att_f(C_ind) if not embedding_given else att_f(embedding[C_ind])
+    C_att = att_f(C_ind) if not embedding_given else att_f(numpy.asarray(embedding[C_ind], dtype='float32'))
     print >>sys.stderr, "Got attention values. Input, output shapes:", C_ind.shape, C_att.shape
     return C_att
 
@@ -222,6 +226,7 @@ if __name__ == "__main__":
   argparser.add_argument('--use_attention', help="Use attention in ontoLSTM. If this flag is not set, will use average concept representations", action='store_true')
   argparser.add_argument('--attention_output', type=str, help="Print attention values of the validation data in the given file")
   argparser.add_argument('--synset_embedding', type=str, help="File with synset vectors")
+  argparser.add_argument('--fix_embedding', help="File with synset vectors", action='store_true')
   argparser.add_argument('--num_epochs', type=int, help="Number of epochs (default 20)", default=20)
   args = argparser.parse_args()
   use_synset_embedding = False
@@ -270,7 +275,7 @@ if __name__ == "__main__":
   if args.attention_output is not None:
     rev_synset_ind = {ind: syn for (syn, ind) in em.dp.synset_index.items()}
     C_ind = numpy.concatenate([C1_ind[train_size:], C2_ind[train_size:]])
-    C_att = em.get_attention(C_ind, ind_synset_embedding) if use_synset_embedding else em.get_attention(C_ind) 
+    C_att = em.get_attention(C_ind, ind_synset_embedding) if args.fix_embedding else em.get_attention(C_ind) 
     C1_att, C2_att = numpy.split(C_att, 2)
     # Concatenate sentence 1 and 2 in each data point
     C_sj_ind = numpy.concatenate([C1_ind[train_size:], C2_ind[train_size:]], axis=1)

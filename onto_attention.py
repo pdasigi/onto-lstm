@@ -129,7 +129,8 @@ class OntoAttentionLSTM(Recurrent):
             # TODO: Make the following line not specific to theano
             #x_proj, _ = theano.scan(fn=project_concept, sequences=[x_cs.dimshuffle(1,0,2)], non_sequences=c_tm1)
             syn_proj = K.T.tensordot(x_cs.dimshuffle(1,0,2), self.P_syn_att, axes=(2,0))
-            cont_proj = K.dot(c_tm1, self.P_cont_att)
+            #cont_proj = K.dot(c_tm1, self.P_cont_att)
+            cont_proj = K.dot(h_tm1, self.P_cont_att)
             x_proj = K.sigmoid(syn_proj + cont_proj)
             att = K.softmax(K.T.tensordot(x_proj.dimshuffle(1,0,2), self.s_att, axes=(2,0)))
             if theano.config.device == "gpu":

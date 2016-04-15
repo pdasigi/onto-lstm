@@ -2,15 +2,11 @@ import sys
 import numpy
 import gzip
 import argparse
-import random
-import theano
 from index_data import DataProcessor
 from onto_attention import OntoAttentionLSTM
-from keras.models import Graph, Sequential
-from keras.layers.core import Activation, Dense, Dropout
+from keras.models import Model
+from keras.layers import Activation, Dense, Dropout, Embedding, Input, LSTM, merge
 from keras_extensions import HigherOrderEmbedding
-from keras.layers.recurrent import LSTM
-from keras.layers.embeddings import Embedding
 
 class EntailmentModel(object):
   def __init__(self, embed_file, num_senses=2, num_hyps=5):
@@ -97,7 +93,7 @@ class EntailmentModel(object):
         C2_ind[i][-sent2len+j][-len(syn_ind):] = syn_ind
     return (S1, S2), (S1_ind, S2_ind), (C1_ind, C2_ind)
 
-  def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, train_size,ontoLSTM=False, use_attention=False, num_epochs=20, embedding=None, tune_embedding=True):
+  def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, ontoLSTM=False, use_attention=False, num_epochs=20, embedding=None, tune_embedding=True):
     word_dim = 50
     assert S1_ind.shape == S2_ind.shape
     assert C1_ind.shape == C2_ind.shape
@@ -107,80 +103,56 @@ class EntailmentModel(object):
     label_onehot = numpy.zeros((len(label_ind), num_label_types))
     for i, ind in enumerate(label_ind):
       label_onehot[i][ind] = 1.0
-    model = Graph()
     if ontoLSTM:
       print >>sys.stderr, "Using OntoLSTM"
       if tune_embedding:
-        model.add_input(name='sent1', input_shape=C1_ind.shape[1:])
-        model.add_input(name='sent2', input_shape=C2_ind.shape[1:])
+        sent1 = Input(name='sent1', shape=C1_ind.shape[1:], dtype='int32')
+        sent2 = Input(name='sent2', shape=C2_ind.shape[1:], dtype='int32')
+        model_inputs = [sent1, sent2]
         if embedding is None:
-          embedding_layer = HigherOrderEmbedding(input_dim=num_syns, output_dim=word_dim)
+          embedding_layer = HigherOrderEmbedding(input_dim=num_syns, output_dim=word_dim, name='embedding')
         else:
-          embedding_layer = HigherOrderEmbedding(input_dim=num_syns, output_dim=word_dim, weights=[embedding])
-        model.add_shared_node(embedding_layer, name='sent_embedding', inputs=['sent1', 'sent2'], outputs=['sent1_embedding', 'sent2_embedding'])
+          embedding_layer = HigherOrderEmbedding(input_dim=num_syns, output_dim=word_dim, weights=[embedding], name='embedding')
+        sent1_embedding = embedding_layer(sent1)
+        sent2_embedding = embedding_layer(sent2)
       else:
         assert embedding is not None, "If you wish to fix the embedding (tune_embedding == False), initialize it (embedding should not be None)"
         embed_dim = embedding.shape[1]
-        model.add_input(name='sent1_embedding', input_shape=(C1_ind.shape[1], C1_ind.shape[2], embed_dim))
-        model.add_input(name='sent2_embedding', input_shape=(C2_ind.shape[1], C2_ind.shape[2], embed_dim))
-      model.add_node(Dropout(0.5), name="sent1_dropout", input='sent1_embedding')
-      model.add_node(Dropout(0.5), name="sent2_dropout", input='sent2_embedding')
-      lstm = OntoAttentionLSTM(input_dim=word_dim, output_dim=word_dim/2, input_length=length, num_hyps=self.max_hyps_per_word, use_attention=use_attention)
-      model.add_shared_node(lstm, name='sent_lstm', inputs=['sent1_dropout', 'sent2_dropout'], outputs=['sent1_lstm', 'sent2_lstm'])
-      model.add_node(Dense(output_dim=num_label_types, activation='softmax'), name='label_probs', inputs=['sent1_lstm', 'sent2_lstm'], merge_mode='concat')
-      model.add_output(name='output', input='label_probs')
+        sent1_embedding = Input(name='sent1_embedding', shape=(C1_ind.shape[1:], C1_ind.shape[2], embed_dim))
+        sent1_embedding = Input(name='sent2_embedding', shape=(C2_ind.shape[1:], C2_ind.shape[2], embed_dim))
+        model_inputs = [sent1_embedding, sent2_embedding]
+      sent1_dropout = Dropout(0.5)(sent1_embedding)
+      sent2_dropout = Dropout(0.5)(sent2_embedding)
+      lstm = OntoAttentionLSTM(input_dim=word_dim, output_dim=word_dim/2, input_length=length, num_hyps=self.max_hyps_per_word, use_attention=use_attention, name='sent_lstm')
+      sent1_lstm_output = lstm(sent1_dropout)
+      sent2_lstm_output = lstm(sent2_dropout)
+      merged_sent_rep = merge([sent1_lstm_output, sent2_lstm_output], mode='concat')
+      softmax = Dense(output_dim=num_label_types, activation='softmax')
+      label_probs = softmax(merged_sent_rep)
+      model = Model(input=model_inputs, output=label_probs)
       print >>sys.stderr, model.summary()
-      model.compile(optimizer='adam', loss={'output': 'categorical_crossentropy'})
-      for _ in range(num_epochs):
-        C1_ind_train = C1_ind[:train_size]
-        C2_ind_train = C2_ind[:train_size]
-        label_train = label_onehot[:train_size]
-        C1_ind_valid = C1_ind[train_size:]
-        C2_ind_valid = C2_ind[train_size:]
-        label_valid = label_onehot[train_size:]
-        if not tune_embedding:
-          C1_train = embedding[C1_ind_train]
-          C2_train = embedding[C2_ind_train]
-          C1_valid = embedding[C1_ind_valid]
-          C2_valid = embedding[C2_ind_valid]
-          model.fit({'sent1_embedding': C1_train, 'sent2_embedding': C2_train, 'output': label_train}, nb_epoch=1)
-          train_probs = model.predict({'sent1_embedding': C1_train, 'sent2_embedding': C2_train})['output']
-          valid_probs = model.predict({'sent1_embedding': C1_valid, 'sent2_embedding': C2_valid})['output']
-        else:
-          model.fit({'sent1': C1_ind_train, 'sent2': C2_ind_train, 'output': label_train}, nb_epoch=1)
-          train_probs = model.predict({'sent1': C1_ind_train, 'sent2': C2_ind_train})['output']
-          valid_probs = model.predict({'sent1': C1_ind_valid, 'sent2': C2_ind_valid})['output']
-        train_preds = numpy.argmax(train_probs, axis=1)
-        train_labels = numpy.argmax(label_onehot[:train_size], axis=1)
-        valid_preds = numpy.argmax(valid_probs, axis=1)
-        valid_labels = numpy.argmax(label_onehot[train_size:], axis=1)
-        print >>sys.stderr, "Train accuracy", sum(train_preds == train_labels) / float(len(train_preds))
-        print >>sys.stderr, "Valid accuracy", sum(valid_preds == valid_labels) / float(len(valid_preds))
+      model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+      model.fit([C1_ind, C2_ind], label_onehot, nb_epoch=20, validation_split=0.1)
       self.model = model
     else:
       print >>sys.stderr, "Using traditional LSTM"
-      model.add_input(name='sent1', input_shape=S1_ind.shape[1:], dtype='int')
-      model.add_input(name='sent2', input_shape=S2_ind.shape[1:], dtype='int')
-      embedding_layer = Embedding(input_dim=num_words, output_dim=word_dim)
-      model.add_shared_node(embedding_layer, name='sent_embedding', inputs=['sent1', 'sent2'], outputs=['sent1_embedding', 'sent2_embedding'])
-      model.add_node(Dropout(0.5), name="sent1_dropout", input='sent1_embedding')
-      model.add_node(Dropout(0.5), name="sent2_dropout", input='sent2_embedding')
-      lstm = LSTM(input_dim=word_dim, output_dim=word_dim/2, input_length=length)
-      model.add_shared_node(lstm, name='sent_lstm', inputs=['sent1_dropout', 'sent2_dropout'], outputs=['sent1_lstm', 'sent2_lstm'])
-      model.add_node(Dense(output_dim=num_label_types, activation='softmax'), name='label_probs', inputs=['sent1_lstm', 'sent2_lstm'], merge_mode='concat')
-      model.add_output(name='output', input='label_probs')
+      sent1 = Input(name='sent1', shape=S1_ind.shape[1:], dtype='int32')
+      sent2 = Input(name='sent2', shape=S2_ind.shape[1:], dtype='int32')
+      embedding_layer = Embedding(input_dim=num_words, output_dim=word_dim, name='embedding')
+      sent1_embedding = embedding_layer(sent1)
+      sent2_embedding = embedding_layer(sent2)
+      sent1_dropout = Dropout(0.5)(sent1_embedding)
+      sent2_dropout = Dropout(0.5)(sent2_embedding)
+      lstm = LSTM(input_dim=word_dim, output_dim=word_dim/2, input_length=length, name='sent_lstm')
+      sent1_lstm_out = lstm(sent1_dropout)
+      sent2_lstm_out = lstm(sent2_dropout)
+      merged_sent_rep = merge([sent1_lstm_out, sent2_lstm_out], mode='concat')
+      softmax = Dense(output_dim=num_label_types, activation='softmax')
+      label_probs = softmax(merged_sent_rep)
+      model = Model(input=[sent1, sent2], output=label_probs)
       print >>sys.stderr, model.summary()
-      model.compile(optimizer='adam', loss={'output': 'categorical_crossentropy'})
-      for _ in range(num_epochs):
-        model.fit({'sent1': S1_ind[:train_size], 'sent2': S2_ind[:train_size], 'output': label_onehot[:train_size]}, nb_epoch=1)
-        train_probs = model.predict({'sent1': S1_ind[:train_size], 'sent2': S2_ind[:train_size]})['output']
-        valid_probs = model.predict({'sent1': S1_ind[train_size:], 'sent2': S2_ind[train_size:]})['output']
-        train_preds = numpy.argmax(train_probs, axis=1)
-        train_labels = numpy.argmax(label_onehot[:train_size], axis=1)
-        valid_preds = numpy.argmax(valid_probs, axis=1)
-        valid_labels = numpy.argmax(label_onehot[train_size:], axis=1)
-        print >>sys.stderr, "Train accuracy", sum(train_preds == train_labels) / float(len(train_preds))
-        print >>sys.stderr, "Valid accuracy", sum(valid_preds == valid_labels) / float(len(valid_preds))
+      model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+      model.fit([S1_ind, S2_ind], label_onehot, nb_epoch=20, validation_split=0.1)
       self.model = model
 
   def get_attention(self, C_ind, embedding=None):
@@ -189,11 +161,11 @@ class EntailmentModel(object):
     embedding_given = False if embedding is None else True
     model_embedding = None
     model_lstm = None
-    for node_name in self.model.nodes:
-      if node_name == "sent_embedding":
-        model_embedding = self.model.nodes[node_name]
-      if node_name == "sent_lstm":
-        model_lstm = self.model.nodes[node_name].layer
+    for layer in self.model.layers:
+      if layer.name == "embedding":
+        model_embedding = layer
+      if layer.name == "sent_lstm":
+        model_lstm = layer
     if not (model_embedding or embedding_given) or not model_lstm:
       raise RuntimeError, "Did not find the layers expected"
     lstm_weights = model_lstm.get_weights()
@@ -201,18 +173,22 @@ class EntailmentModel(object):
     pkl_file = open("lstm_weights.pkl", "wb")
     pickle.dump(lstm_weights, pkl_file)
     pkl_file.close()
-    att_model = Sequential()
     if not embedding_given:
+      sent = Input(shape=C_ind.shape[1:], dtype='int32')
       embedding_weights = model_embedding.get_weights()
       embed_in_dim, embed_out_dim = embedding_weights[0].shape
-      att_model.add(HigherOrderEmbedding(input_dim=embed_in_dim, output_dim=embed_out_dim, weights=embedding_weights))
+      att_embedding = HigherOrderEmbedding(input_dim=embed_in_dim, output_dim=embed_out_dim, weights=embedding_weights)
+      sent_embedding = att_embedding(sent)
+      att_input = sent
     else:
-      _, embed_out_dim = embedding.shape 
-    att_model.add(OntoAttentionLSTM(input_dim=embed_out_dim, output_dim=embed_out_dim/2, input_length=model_lstm.input_length, num_hyps=self.max_hyps_per_word, use_attention=model_lstm.use_attention, weights=lstm_weights))
-    sym_input = att_model.get_input()
-    sym_output = att_model.layers[-1].get_attention()
-    att_f = theano.function([sym_input], sym_output)
-    C_att = att_f(C_ind) if not embedding_given else att_f(numpy.asarray(embedding[C_ind], dtype='float32'))
+      _, embed_out_dim = embedding.shape
+      sent_embedding = Input(shape=(C_ind.shape[1], C_ind.shape[2], embed_out_dim))
+      att_input = sent_embedding
+    onto_lstm = OntoAttentionLSTM(input_dim=embed_out_dim, output_dim=embed_out_dim/2, input_length=model_lstm.input_length, num_hyps=self.max_hyps_per_word, use_attention=True, return_attention=True, weights=lstm_weights)
+    att_output = onto_lstm(sent_embedding)
+    att_model = Model(input=att_input, output=att_output)
+    att_model.compile(optimizer='adam', loss='mse') # optimizer and loss are not needed since we are not going to train this model.
+    C_att = att_model.predict(C_ind) if not embedding_given else att_model.predict(embedding[C_ind])
     print >>sys.stderr, "Got attention values. Input, output shapes:", C_ind.shape, C_att.shape
     return C_att
 
@@ -256,32 +232,29 @@ if __name__ == "__main__":
       label_map[label] = len(label_map)
     label_ind.append(label_map[label])
     tagged_sentences.append(tagged_sentence)
-  sentence_labels = zip(tagged_sentences, label_ind)
-  random.shuffle(sentence_labels)
-  tagged_sentences, label_ind = zip(*sentence_labels)
   _, (S1_ind, S2_ind), (C1_ind, C2_ind) = em.read_sentences(tagged_sentences)
-  train_size = int(0.9 * C1_ind.shape[0])
   if use_synset_embedding:
     ind_synset_embedding = em.numpy_rng.uniform(low=vec_min, high=vec_max, size=(len(em.dp.synset_index), vec_dim))
     for syn in em.dp.synset_index:
       if syn in synset_embedding:
         ind_synset_embedding[em.dp.synset_index[syn]] = synset_embedding[syn]
     print >>sys.stderr, "Using pretrained synset embeddings"
-    em.train(S1_ind, S2_ind, C1_ind, C2_ind, label_ind, len(label_map), train_size, ontoLSTM=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs, embedding=ind_synset_embedding)
+    em.train(S1_ind, S2_ind, C1_ind, C2_ind, label_ind, len(label_map), ontoLSTM=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs, embedding=ind_synset_embedding)
   else: 
     print >>sys.stderr, "Will learn synset embeddings"
-    em.train(S1_ind, S2_ind, C1_ind, C2_ind, label_ind, len(label_map), train_size, ontoLSTM=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs)
+    em.train(S1_ind, S2_ind, C1_ind, C2_ind, label_ind, len(label_map), ontoLSTM=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs)
 
   if args.attention_output is not None:
     rev_synset_ind = {ind: syn for (syn, ind) in em.dp.synset_index.items()}
-    C_ind = numpy.concatenate([C1_ind[train_size:], C2_ind[train_size:]])
+    sample_size = int(C1_ind.shape[0] * 0.1)
+    C_ind = numpy.concatenate([C1_ind[-sample_size:], C2_ind[-sample_size:]])
     C_att = em.get_attention(C_ind, ind_synset_embedding) if args.fix_embedding else em.get_attention(C_ind) 
     C1_att, C2_att = numpy.split(C_att, 2)
     # Concatenate sentence 1 and 2 in each data point
-    C_sj_ind = numpy.concatenate([C1_ind[train_size:], C2_ind[train_size:]], axis=1)
+    C_sj_ind = numpy.concatenate([C1_ind[-sample_size:], C2_ind[-sample_size:]], axis=1)
     C_sj_att = numpy.concatenate([C1_att, C2_att], axis=1)
     outfile = open(args.attention_output, "w")
-    for i, (sent, sent_c_inds, sent_c_atts) in enumerate(zip(tagged_sentences[train_size:], C_sj_ind, C_sj_att)):
+    for i, (sent, sent_c_inds, sent_c_atts) in enumerate(zip(tagged_sentences[-sample_size:], C_sj_ind, C_sj_att)):
       print >>outfile, "SENT %d: %s"%(i, sent)
       for word_c_inds, word_c_atts in zip(sent_c_inds, sent_c_atts):
         if sum(word_c_inds) == 0:

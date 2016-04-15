@@ -2,7 +2,7 @@ from __future__ import absolute_import
 from keras import backend as K
 
 from keras import activations, initializations, regularizers, constraints
-from keras.layers.core import Layer, MaskedLayer
+from keras.engine import Layer
 
 from keras.constraints import unitnorm
 
@@ -37,20 +37,23 @@ class HigherOrderEmbedding(Layer):
         self.mask_zero = mask_zero
 
         self.W_constraint = constraints.get(W_constraint)
-        self.constraints = [self.W_constraint]
 
         self.W_regularizer = regularizers.get(W_regularizer)
         self.activity_regularizer = regularizers.get(activity_regularizer)
 
         self.initial_weights = weights
         kwargs['input_shape'] = (self.input_length2, self.input_dim)
+        kwargs['input_dtype'] = 'int32'
         super(HigherOrderEmbedding, self).__init__(**kwargs)
 
-    def build(self):
-        self.input = K.placeholder(shape=(self.input_shape[0], self.input_length1, self.input_length2),
-                                   dtype='int32')
+    def build(self, input_shape):
         self.W = self.init((self.input_dim, self.output_dim))
         self.trainable_weights = [self.W]
+        
+        self.constraints = {}
+        if self.W_constraint:
+            self.constraints = [self.W_constraint]
+
         self.regularizers = []
         if self.W_regularizer:
             self.W_regularizer.set_param(self.W)
@@ -63,26 +66,21 @@ class HigherOrderEmbedding(Layer):
         if self.initial_weights is not None:
             self.set_weights(self.initial_weights)
 
-    def get_output_mask(self, train=None):
-        X = self.get_input(train)
+    def compute_mask(self, x, mask=None):
         if not self.mask_zero:
             return None
         else:
-            return K.not_equal(X, 0)
+            return K.not_equal(x, 0)
 
-    @property
-    def output_shape(self):
-        return (self.input_shape[0], self.input_length1, self.input_length2, self.output_dim)
+    def get_output_shape_for(self, input_shape):
+        return (input_shape[0], self.input_length1, self.input_length2, self.output_dim)
 
-    def get_output(self, train=False):
-        X = self.get_input(train)
-        X_ind = K.cast(X, 'int32')
-        out = K.gather(self.W, X_ind)
+    def call(self, x, mask=None):
+        out = K.gather(self.W, x)
         return out
 
     def get_config(self):
-        config = {"name": self.__class__.__name__,
-                  "input_dim": self.input_dim,
+        config = {"input_dim": self.input_dim,
                   "output_dim": self.output_dim,
                   "init": self.init.__name__,
                   "input_length1": self.input_length1,

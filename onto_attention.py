@@ -162,7 +162,7 @@ class OntoAttentionLSTM(Recurrent):
             x_proj = K.sigmoid(syn_proj + cont_proj)
             att = K.softmax(K.T.tensordot(x_proj.dimshuffle(1,0,2), self.s_att, axes=(2,0)))
             if theano.config.device == "gpu":
-                att_t3 = att.reshape((a.shape[0], 1, a.shape[1]))
+                att_t3 = att.reshape((att.shape[0], 1, att.shape[1]))
                 x = fast_batched_dot(att_t3, x_cs)
             else:
                 # Batched dot probably uses scan internally anyway. Sigh!

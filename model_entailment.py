@@ -132,7 +132,9 @@ class EntailmentModel(object):
       model = Model(input=model_inputs, output=label_probs)
       print >>sys.stderr, model.summary()
       model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-      model.fit([C1_ind, C2_ind], label_onehot, nb_epoch=20, validation_split=0.1)
+      data_size = C1_ind.shape[0]
+      train_size = int(data_size * 0.9)
+      model.fit([C1_ind[:train_size], C2_ind[:train_size]], label_onehot[:train_size], nb_epoch=20, validation_data=([C1_ind[train_size:], C2_ind[train_size:]], label_onehot[train_size:]))
       self.model = model
     else:
       print >>sys.stderr, "Using traditional LSTM"
@@ -152,7 +154,9 @@ class EntailmentModel(object):
       model = Model(input=[sent1, sent2], output=label_probs)
       print >>sys.stderr, model.summary()
       model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-      model.fit([S1_ind, S2_ind], label_onehot, nb_epoch=20, validation_split=0.1)
+      data_size = S1_ind.shape[0]
+      train_size = int(data_size * 0.9)
+      model.fit([S1_ind[:train_size], S2_ind[:train_size]], label_onehot[:train_size], nb_epoch=20, validation_data=([S1_ind[train_size:], S2_ind[train_size:]], label_onehot[train_size:]))
       self.model = model
 
   def get_attention(self, C_ind, embedding=None):

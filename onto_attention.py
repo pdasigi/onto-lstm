@@ -2,8 +2,6 @@ from keras.layers import Recurrent
 from keras.engine import InputSpec
 from keras import activations, initializations, regularizers
 from keras import backend as K
-from theano.sandbox.cuda.blas import batched_dot as fast_batched_dot
-import theano
 
 class OntoAttentionLSTM(Recurrent):
     '''
@@ -154,19 +152,11 @@ class OntoAttentionLSTM(Recurrent):
         # So shape of x_cs is (samples, concepts, concept_dim)
         if self.use_attention:
             #project_concept = lambda x_c, st: K.sigmoid(K.dot(K.concatenate([x_c, st], axis=1), self.P_att))
-            # TODO: Make the following line not specific to theano
-            #x_proj, _ = theano.scan(fn=project_concept, sequences=[x_cs.dimshuffle(1,0,2)], non_sequences=c_tm1)
             syn_proj = K.T.tensordot(x_cs.dimshuffle(1,0,2), self.P_syn_att, axes=(2,0))
-            #cont_proj = K.dot(c_tm1, self.P_cont_att)
             cont_proj = K.dot(h_tm1, self.P_cont_att)
             x_proj = K.sigmoid(syn_proj + cont_proj)
             att = K.softmax(K.T.tensordot(x_proj.dimshuffle(1,0,2), self.s_att, axes=(2,0)))
-            if theano.config.device == "gpu":
-                att_t3 = att.reshape((att.shape[0], 1, att.shape[1]))
-                x = K.T.extra_ops.squeeze(fast_batched_dot(att_t3, x_cs))
-            else:
-                # Batched dot probably uses scan internally anyway. Sigh!
-                x = K.T.batched_dot(att, x_cs)
+            x = (x_cs.dimshuffle(2,0,1) * att).sum(axis=2).T
         else:
             att = att_tm1 # Continue propogating matrix of zeros for attention
             x = K.mean(x_cs, axis=1) # shape of x is (samples, concept_dim)

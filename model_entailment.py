@@ -11,7 +11,9 @@ from keras_extensions import HigherOrderEmbedding
 class EntailmentModel(object):
   def __init__(self, embed_file, num_senses=2, num_hyps=5):
     self.dp = DataProcessor(word_syn_cutoff=num_senses, syn_path_cutoff=num_hyps)
-    self.max_hyps_per_word = num_senses * num_hyps
+    #self.max_hyps_per_word = num_senses * num_hyps
+    self.num_senses = num_senses
+    self.num_hyps = num_hyps
     self.numpy_rng = numpy.random.RandomState(12345)
     self.word_rep = {}
     self.word_rep_max = -float("inf")
@@ -64,9 +66,9 @@ class EntailmentModel(object):
       all_pos_tags.append((sent1_pos_tags, sent2_pos_tags))
     if not sentlenlimit:
       sentlenlimit = maxsentlen
-    C1_ind = numpy.zeros((num_sentences, sentlenlimit, self.max_hyps_per_word), dtype='int32')
+    C1_ind = numpy.zeros((num_sentences, sentlenlimit, self.num_senses, self.num_hyps), dtype='int32')
     S1_ind = numpy.zeros((num_sentences, sentlenlimit), dtype='int32')
-    C2_ind = numpy.zeros((num_sentences, sentlenlimit, self.max_hyps_per_word), dtype='int32')
+    C2_ind = numpy.zeros((num_sentences, sentlenlimit, self.num_senses, self.num_hyps), dtype='int32')
     S2_ind = numpy.zeros((num_sentences, sentlenlimit), dtype='int32')
     S1 = numpy.zeros((num_sentences, sentlenlimit, self.word_dim))
     S2 = numpy.zeros((num_sentences, sentlenlimit, self.word_dim))
@@ -81,16 +83,20 @@ class EntailmentModel(object):
       S1_ind[i][-sent1len:] = sent1_word_inds
       for j in range(sent1len):
         S1[i][-sent1len+j] = self.word_rep[sent1_words[j]]
-        syn_ind = sent1_syn_inds[j]
-        C1_ind[i][-sent1len+j][-len(syn_ind):] = syn_ind
+        sense_syn_ind = sent1_syn_inds[j]
+        sense_syn_ind_len = len(sense_syn_ind)
+        for k, syn_ind in enumerate(sense_syn_ind):
+          C1_ind[i][-sent1len+j][-sense_syn_ind_len+k][-len(syn_ind):] = syn_ind
       # Sentence 2 processing
       sent2len = len(sent2_words)
       sent2_word_inds, sent2_syn_inds = self.dp.index_sentence(sent2_words, sent2_pos_tags)
       S2_ind[i][-sent2len:] = sent2_word_inds
       for j in range(sent2len):
         S2[i][-sent2len+j] = self.word_rep[sent2_words[j]]
-        syn_ind = sent2_syn_inds[j]
-        C2_ind[i][-sent2len+j][-len(syn_ind):] = syn_ind
+        sense_syn_ind = sent2_syn_inds[j]
+        sense_syn_ind_len = len(sense_syn_ind)
+        for k, syn_ind in enumerate(sense_syn_ind):
+          C2_ind[i][-sent2len+j][-sense_syn_ind_len+k][-len(syn_ind):] = syn_ind
     return (S1, S2), (S1_ind, S2_ind), (C1_ind, C2_ind)
 
   def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, ontoLSTM=False, use_attention=False, num_epochs=20, embedding=None, tune_embedding=True):
@@ -123,7 +129,7 @@ class EntailmentModel(object):
         model_inputs = [sent1_embedding, sent2_embedding]
       sent1_dropout = Dropout(0.5)(sent1_embedding)
       sent2_dropout = Dropout(0.5)(sent2_embedding)
-      lstm = OntoAttentionLSTM(input_dim=word_dim, output_dim=word_dim/2, input_length=length, num_hyps=self.max_hyps_per_word, use_attention=use_attention, name='sent_lstm')
+      lstm = OntoAttentionLSTM(input_dim=word_dim, output_dim=word_dim/2, input_length=length, num_senses=self.num_senses, num_hyps=self.num_hyps, use_attention=use_attention, name='sent_lstm')
       sent1_lstm_output = lstm(sent1_dropout)
       sent2_lstm_output = lstm(sent2_dropout)
       merged_sent_rep = merge([sent1_lstm_output, sent2_lstm_output], mode='concat')
@@ -188,7 +194,7 @@ class EntailmentModel(object):
       _, embed_out_dim = embedding.shape
       sent_embedding = Input(shape=(C_ind.shape[1], C_ind.shape[2], embed_out_dim))
       att_input = sent_embedding
-    onto_lstm = OntoAttentionLSTM(input_dim=embed_out_dim, output_dim=embed_out_dim/2, input_length=model_lstm.input_length, num_hyps=self.max_hyps_per_word, use_attention=True, return_attention=True, weights=lstm_weights)
+    onto_lstm = OntoAttentionLSTM(input_dim=embed_out_dim, output_dim=embed_out_dim/2, input_length=model_lstm.input_length, num_senses=self.num_senses, num_hyps=self.num_hyps, use_attention=True, return_attention=True, weights=lstm_weights)
     att_output = onto_lstm(sent_embedding)
     att_model = Model(input=att_input, output=att_output)
     att_model.compile(optimizer='adam', loss='mse') # optimizer and loss are not needed since we are not going to train this model.
@@ -260,12 +266,20 @@ if __name__ == "__main__":
     outfile = open(args.attention_output, "w")
     for i, (sent, sent_c_inds, sent_c_atts) in enumerate(zip(tagged_sentences[-sample_size:], C_sj_ind, C_sj_att)):
       print >>outfile, "SENT %d: %s"%(i, sent)
+      words = sent.replace(" |||", "").split()
+      word_id = 0
       for word_c_inds, word_c_atts in zip(sent_c_inds, sent_c_atts):
-        if sum(word_c_inds) == 0:
+        if word_c_inds.sum() == 0:
           continue
-        for c_ind, c_att in zip(word_c_inds, word_c_atts):
-          if c_ind == 0:
+        sense_id = 0
+        print >>outfile, "Attention for %s"%(words[word_id])
+        word_id += 1
+        for s_h_ind, s_h_att in zip(word_c_inds, word_c_atts):
+          if sum(s_h_ind) == 0:
             continue
-          print >>outfile, rev_synset_ind[c_ind], c_att 
+          print >>outfile, "\nSense %d"%(sense_id)
+          sense_id += 1
+          for h_ind, h_att in zip(s_h_ind, s_h_att):
+            print >>outfile, rev_synset_ind[h_ind], h_att 
         print >>outfile
       print >>outfile

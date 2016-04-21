@@ -7,7 +7,7 @@ class OntoAttentionLSTM(Recurrent):
     '''
     Modification of LSTM implementation in Keras to take a hierarchy as input (matrix instead of a vector at each time step), and take a weighted average of it using attention mechanism.
     '''
-    input_ndim = 4
+    input_ndim = 5
     
     def __init__(self, output_dim,
                  init='glorot_uniform', inner_init='orthogonal',
@@ -16,7 +16,7 @@ class OntoAttentionLSTM(Recurrent):
                  W_regularizer=None, U_regularizer=None, b_regularizer=None,
                  weights=None, return_sequences=False, go_backwards=False, stateful=False,
                  unroll=None, consume_less='cpu',
-                 input_dim=None, num_hyps=None, input_length=None, use_attention=False, 
+                 input_dim=None, num_senses=None, num_hyps=None, input_length=None, use_attention=False, 
                  return_attention=False, **kwargs):
         self.output_dim = output_dim
         self.init = initializations.get(init)
@@ -36,18 +36,19 @@ class OntoAttentionLSTM(Recurrent):
 
         self.supports_masking = True
         self.input_dim = input_dim
+        self.num_senses = num_senses
         self.num_hyps = num_hyps
         self.input_length = input_length
         self.use_attention = use_attention
         self.return_attention = return_attention
         self.initial_weights = weights
         if self.input_dim:
-            kwargs['input_shape'] = (self.input_length, self.num_hyps, self.input_dim)
+            kwargs['input_shape'] = (self.input_length, self.num_senses, self.num_hyps, self.input_dim)
         super(Recurrent, self).__init__(**kwargs)
 
     def build(self, input_shape):
         self.input_spec = [InputSpec(shape=input_shape)]
-        input_dim = input_shape[3]
+        input_dim = input_shape[4]
         self.input_dim = input_dim
 
         if self.stateful:
@@ -98,24 +99,32 @@ class OntoAttentionLSTM(Recurrent):
 
         if self.use_attention:
             # Following are the attention parameters
-            self.P_syn_att = self.inner_init((input_dim, self.output_dim)) # Projection operator for synsets
-            self.P_cont_att = self.inner_init((self.output_dim, self.output_dim)) # Projection operator for hidden state (context)
-            self.s_att = self.init((self.output_dim,))
-            self.trainable_weights.extend([self.P_syn_att, self.P_cont_att, self.s_att])
+            # Sense projection and scoring
+            self.P_sense_syn_att = self.inner_init((input_dim, self.output_dim)) # Projection operator for synsets
+            self.P_sense_cont_att = self.inner_init((self.output_dim, self.output_dim)) # Projection operator for hidden state (context)
+            self.s_sense_att = self.init((self.output_dim,))
+
+            # Generalization projection and scoring
+            self.P_gen_syn_att = self.inner_init((input_dim, self.output_dim)) # Projection operator for synsets
+            self.P_gen_cont_att = self.inner_init((self.output_dim, self.output_dim)) # Projection operator for hidden state (context)
+            self.s_gen_att = self.init((self.output_dim,))
+
+            self.trainable_weights.extend([self.P_sense_syn_att, self.P_sense_cont_att, self.s_sense_att,
+                                           self.P_gen_syn_att, self.P_gen_cont_att, self.s_gen_att])
 
         if self.initial_weights is not None:
             self.set_weights(self.initial_weights)
             #del self.initial_weights
 
-    # Reimplementing because ndim of X is 4
+    # Reimplementing because ndim of X is 5
     def get_initial_states(self, X):
         # build an all-zero tensor of shape (samples, output_dim)
-        initial_state = K.zeros_like(X)  # (samples, timesteps, num_concepts, input_dim)
-        initial_state = K.sum(initial_state, axis=(1, 2))  # (samples, input_dim)
+        initial_state = K.zeros_like(X)  # (samples, timesteps, num_senses, num_hyps, input_dim)
+        initial_state = K.sum(initial_state, axis=(1, 2, 3))  # (samples, input_dim)
         reducer1 = K.zeros((self.input_dim, self.output_dim))
-        reducer2 = K.zeros((self.input_dim, self.num_hyps))
+        reducer2 = K.zeros((self.input_dim, self.num_senses, self.num_hyps))
         initial_state1 = K.dot(initial_state, reducer1)  # (samples, output_dim)
-        initial_state2 = K.dot(initial_state, reducer2)  # (samples, num_hyps)
+        initial_state2 = K.T.tensordot(initial_state, reducer2, axes=(1,0))  # (samples, num_senses, num_hyps)
         #initial_states = [initial_state for _ in range(len(self.states))]
         initial_states = [initial_state1, initial_state1, initial_state2]
         return initial_states
@@ -148,18 +157,32 @@ class OntoAttentionLSTM(Recurrent):
         # TODO: Use attention from previous state for computing current attention?
         att_tm1 = states[2] 
 
-        # Before the step function is called, the original input is dimshuffled to have (time, samples, concepts, concept_dim)
-        # So shape of x_cs is (samples, concepts, concept_dim)
+        # Before the step function is called, the original input is dimshuffled to have (time, samples, senses, hyps, concept_dim)
+        # So shape of x_cs is (samples, senses, hyps, concept_dim)
         if self.use_attention:
-            #project_concept = lambda x_c, st: K.sigmoid(K.dot(K.concatenate([x_c, st], axis=1), self.P_att))
-            syn_proj = K.T.tensordot(x_cs.dimshuffle(1,0,2), self.P_syn_att, axes=(2,0))
-            cont_proj = K.dot(h_tm1, self.P_cont_att)
-            x_proj = K.sigmoid(syn_proj + cont_proj)
-            att = K.softmax(K.T.tensordot(x_proj.dimshuffle(1,0,2), self.s_att, axes=(2,0)))
-            x = (x_cs.dimshuffle(2,0,1) * att).sum(axis=2).T
+            # Sense attention
+            # Consider only the lowest (most specific) synset in each sense to determine sense attention
+            s_syn_proj = K.T.tensordot(x_cs[:, :, -1, :].dimshuffle(1,0,2), self.P_sense_syn_att, axes=(2,0)) # (senses, samples, proj_dim)
+            s_cont_proj = K.dot(h_tm1, self.P_sense_cont_att) # (samples, proj_dim)
+            s_x_proj = K.sigmoid(s_syn_proj + s_cont_proj) # (senses, samples, proj_dim)
+            sense_att = K.softmax(K.T.tensordot(s_x_proj.dimshuffle(1,0,2), self.s_sense_att, axes=(2,0))) # (samples, senses)
+
+            # Generalization attention
+            g_syn_proj = K.T.tensordot(x_cs.dimshuffle(1,2,0,3), self.P_gen_syn_att, axes=(3,0)) # (senses, hyps, samples, proj_dim)
+            g_cont_proj = K.dot(h_tm1, self.P_gen_cont_att) # (samples, proj_dim)
+            g_x_proj = K.sigmoid(g_syn_proj + g_cont_proj) # (senses, hyps, samples, proj_dim)
+            gen_scores = K.T.tensordot(g_x_proj.dimshuffle(2,0,1,3), self.s_gen_att, axes=(3,0)) # (samples, senses, hyps)
+            gs_shape = gen_scores.shape
+            gen_scores_rs = gen_scores.reshape((gs_shape[0] * gs_shape[1], gs_shape[2]))
+            gen_att_rs = K.softmax(gen_scores_rs).reshape((gs_shape[2], gs_shape[0], gs_shape[1]))
+
+            # We need gen_att dimshuffled to (hyps, samples, senses), so reshaping into the needed order of dims
+            att = (gen_att_rs * sense_att).dimshuffle(1,2,0) # (samples, senses, hyps)
+
+            x = (x_cs.dimshuffle(3,0,1,2) * att).sum(axis=(2,3)).T # [\sum_{(senses, hyps)} (in_dim, samples, senses, hyps) X (samples, senses, hyps)].T = (samples, in_dim)
         else:
             att = att_tm1 # Continue propogating matrix of zeros for attention
-            x = K.mean(x_cs, axis=1) # shape of x is (samples, concept_dim)
+            x = K.mean(x_cs, axis=(1,2)) # shape of x is (samples, concept_dim)
         
         x_i = K.dot(x, self.W_i) + self.b_i
         x_f = K.dot(x, self.W_f) + self.b_f

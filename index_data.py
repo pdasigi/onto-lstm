@@ -15,16 +15,6 @@ class DataProcessor(object):
     self.word_index = {"NONE": 0}
     self.synset_index = {"NONE": 0}
     
-    #self.man_hypernyms = self.get_hypernyms_syn(wn.synset('man.n.01'))
-    #self.woman_hypernyms = self.get_hypernyms_syn(wn.synset('woman.n.01'))
-    #self.people_hypernyms = self.get_hypernyms_syn(wn.synset('people.n.01')).union(self.get_hypernyms_syn(wn.synset('people.n.03')))
-    #self.loc_hypernyms = self.get_hypernyms_syn(wn.synset('geographical_area.n.01'))
-    #self.person_hypernyms = self.get_hypernyms_syn(wn.synset('person.n.01'))
-    #self.year_hypernyms = self.get_hypernyms_syn(wn.synset('year.n.01'))
-    #self.number_hypernyms = self.get_hypernyms_syn(wn.synset('number.n.01'))
-
-    #self.misc_hypernyms = set(self.loc_hypernyms).union(self.person_hypernyms)
-
   def get_hypernyms_syn(self, syn, path_cutoff=None):
     if not path_cutoff:
       path_cutoff = self.syn_path_cutoff
@@ -37,7 +27,7 @@ class DataProcessor(object):
         shortest_path = path
     pruned_path = list(shortest_path) if path_cutoff == -1 or path_cutoff >= len(shortest_path) else [x for x in reversed(shortest_path)][:path_cutoff]
     hypernyms = [s.name() for s in pruned_path]
-    return set(hypernyms)
+    return hypernyms
 
   def get_hypernyms_word(self, word, pos, syn_cutoff=-1):
     wrd_lower = word.lower()
@@ -50,36 +40,27 @@ class DataProcessor(object):
       syns += wn.synsets("thing", "n")
     elif wrd_lower in self.male_prons:
       syns += wn.synsets("man", "n")
-      #hypernyms = list(self.man_hypernyms)
     elif wrd_lower in self.female_prons:
       syns += wn.synsets("woman", "n")
-      #hypernyms = list(self.female_prons)
     elif wrd_lower in self.people_prons:
       syns += wn.synsets("people", "n")
-      #hypernyms = list(self.people_hypernyms)
     elif wrd_lower in self.person_prons:
       syns += wn.synsets("person", "n")
-      #hypernyms = list(self.person_hypernyms)
     elif re.match('^[12][0-9]{3}$', word) is not None:
       # The argument looks like an year
       syns += wn.synsets("year", "n") + wn.synsets("number", "n")
-      #hypernyms = list(self.year_hypernyms)
     elif re.match('^[0-9]+[.,-]?[0-9]*', word) is not None:
       syns += wn.synsets("number", "n")
-      #hypernyms = list(self.number_hypernyms)
-    #elif word[0].isupper():
-    #  hypernyms = list(self.misc_hypernyms)
     if len(hypernyms) == 0:
       if len(syns) != 0:
         pruned_synsets = list(syns) if self.word_syn_cutoff == -1 else syns[:self.word_syn_cutoff]
         for syn in pruned_synsets:
-          hypernyms.extend(list(self.get_hypernyms_syn(syn)))
+          hypernyms.append(self.get_hypernyms_syn(syn))
       else:
-        hypernyms = [word]
-    return set(hypernyms)
+        hypernyms = [[word]]
+    return hypernyms
 
   def index_sentence(self, words, pos_tags):
-    #words = word_tokenize(sentence)
     word_inds = []
     conc_inds = []
     for word, pos_tag in zip(words, pos_tags):
@@ -102,10 +83,13 @@ class DataProcessor(object):
       else:
         word_hyps = self.get_hypernyms_word(word, wn_pos)
         self.word_hypernym_map[(word, wn_pos)] = word_hyps
-      for syn in word_hyps:
-        if syn not in self.synset_index:
-          self.synset_index[syn] = len(self.synset_index)
-        word_conc_inds.append(self.synset_index[syn])
+      for sense_syns in word_hyps:
+        word_sense_conc_inds = []
+        for syn in sense_syns:
+          if syn not in self.synset_index:
+            self.synset_index[syn] = len(self.synset_index)
+          word_sense_conc_inds.append(self.synset_index[syn])
+        word_conc_inds.append(word_sense_conc_inds)
       word_inds.append(self.word_index[word])
       conc_inds.append(word_conc_inds)
     return word_inds, conc_inds

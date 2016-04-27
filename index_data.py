@@ -85,7 +85,8 @@ class DataProcessor(object):
         self.word_hypernym_map[(word, wn_pos)] = word_hyps
       for sense_syns in word_hyps:
         word_sense_conc_inds = []
-        for syn in sense_syns:
+        # Most specific concept will be at the end
+        for syn in reversed(sense_syns):
           if syn not in self.synset_index:
             self.synset_index[syn] = len(self.synset_index)
           word_sense_conc_inds.append(self.synset_index[syn])

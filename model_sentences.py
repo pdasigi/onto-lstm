@@ -171,7 +171,7 @@ if __name__ == '__main__':
   _, train_sent_len, _, _ = C_ind.shape 
   if args.test_file is not None:
     print >>sys.stderr, "Reading test data"
-    ts_test = [x.strip() for x in open(args.test_file).readlines()]
+    ts_test = [x.strip() for x in codecs.open(args.test_file, "r", "utf-8").readlines()]
     S_ind_test, C_ind_test = sm.read_sentences(ts_test, sentlenlimit=train_sent_len)
     concept_reps = sm.train(S_ind, C_ind, use_onto_lstm=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs, S_ind_test=S_ind_test, C_ind_test=C_ind_test)
   else:

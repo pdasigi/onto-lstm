@@ -11,6 +11,7 @@ from onto_attention import OntoAttentionLSTM
 from keras.models import Model
 from keras.layers import Input, Dropout, LSTM, Dense
 from keras.layers.wrappers import TimeDistributed
+from keras.callbacks import EarlyStopping
 from keras_extensions import HigherOrderEmbedding
 
 class SentenceModel(object):
@@ -91,11 +92,12 @@ class SentenceModel(object):
 
     model = Model(input=input, output=[softmax_1, softmax_2])
     print >>sys.stderr, model.summary()
+    early_stopping = EarlyStopping()
     precompile_time = time.time()
     model.compile(loss='categorical_crossentropy', optimizer='adam')
     postcompile_time = time.time()
     print >>sys.stderr, "Model compilation took %d s"%(postcompile_time - precompile_time)
-    model.fit(X, [Y_1, Y_2], nb_epoch=num_epochs, validation_split=0.1)
+    model.fit(X, [Y_1, Y_2], nb_epoch=num_epochs, validation_split=0.1, callbacks=[early_stopping])
     posttrain_time = time.time()
     print >>sys.stderr, "Training took %d s"%(posttrain_time - postcompile_time)
     concept_reps = model.layers[1].get_weights()

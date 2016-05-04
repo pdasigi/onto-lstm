@@ -87,7 +87,8 @@ class SentenceModel(object):
       vocab_size = max(Y_inds.max(), Y_inds_test.max()) + 1
       Y_1_test, Y_2_test = self.factor_target_indices(Y_inds_test, vocab_size)
       Y_1, Y_2 = self.factor_target_indices(Y_inds, vocab_size)
-    Y_1, Y_2 = self.factor_target_indices(Y_inds)
+    else:
+      Y_1, Y_2 = self.factor_target_indices(Y_inds)
     length = Y_inds.shape[1]
     lstm_outdim = self.word_dim
     

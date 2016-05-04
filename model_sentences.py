@@ -9,7 +9,7 @@ import argparse
 from index_data import DataProcessor
 from onto_attention import OntoAttentionLSTM
 from keras.models import Model
-from keras.layers import Input, Dropout, LSTM
+from keras.layers import Input, Dropout, LSTM, Dense
 from keras.layers.wrappers import TimeDistributed
 from keras_extensions import HigherOrderEmbedding
 
@@ -86,8 +86,8 @@ class SentenceModel(object):
       lstm_out = OntoAttentionLSTM(name='sent_lstm', input_dim=self.word_dim, output_dim=lstm_outdim, input_length=length, num_senses=self.num_senses, num_hyps=self.num_hyps, return_sequences=True, use_attention=True)(reg_sent_rep)
     else:
       lstm_out = LSTM(name='sent_lstm', input_dim=self.word_dim, output_dim=lstm_outdim, input_length=length, return_sequences=True)(reg_sent_rep)
-    softmax_1 = TimeDistributed(Dense(input_dim=lstm_outdim, output_dim=factor_size, activation='softmax')(lstm_out))
-    softmax_2 = TimeDistributed(Dense(input_dim=lstm_outdim, output_dim=factor_size, activation='softmax')(lstm_out))
+    softmax_1 = TimeDistributed(Dense(input_dim=lstm_outdim, output_dim=factor_size, activation='softmax'))(lstm_out)
+    softmax_2 = TimeDistributed(Dense(input_dim=lstm_outdim, output_dim=factor_size, activation='softmax'))(lstm_out)
 
     model = Model(input=input, output=[softmax_1, softmax_2])
     print >>sys.stderr, model.summary()

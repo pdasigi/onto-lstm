@@ -59,12 +59,11 @@ class SentenceModel(object):
         for k, syn_ind in enumerate(sense_syn_ind):
           C_ind[i][-sentlen+j][-sense_syn_ind_len+k][-len(syn_ind):] = syn_ind
     return S_ind, C_ind
-    
-  def train(self, S_ind, C_ind, use_onto_lstm=True, use_attention=True, num_epochs=20):
-    # Predict next word from current synsets
-    X = C_ind[:,:-1] if use_onto_lstm else S_ind[:,:-1] # remove the last words' hyps in all sentences
-    Y_inds = S_ind[:,1:] # remove the first words in all sentences
-    factor_size = int(math.ceil(math.sqrt(Y_inds.max() + 1)))
+
+  def factor_target_indices(self, Y_inds, vocab_size=None):
+    if vocab_size is None:
+      vocab_size = Y_inds.max() + 1
+    factor_size = int(math.ceil(math.sqrt(vocab_size)))
     Y_inds_1 = numpy.asarray(Y_inds/factor_size, dtype='int32')
     Y_inds_2 = numpy.asarray(Y_inds%factor_size, dtype='int32')
     # Making one-hot vectors out of Y_inds_1 and Y_inds_2
@@ -74,6 +73,21 @@ class SentenceModel(object):
     Y_2 = numpy.zeros((Y_inds_2.shape + (factor_size,)))
     for inds in itertools.product(*[numpy.arange(s) for s in Y_inds_2.shape]):
       Y_2[inds+(Y_inds_2[inds],)] = 1
+    return Y_1, Y_2
+    
+  def train(self, S_ind, C_ind, use_onto_lstm=True, use_attention=True, num_epochs=20, S_ind_test=None, C_ind_test=None):
+    # Predict next word from current synsets
+    X = C_ind[:,:-1] if use_onto_lstm else S_ind[:,:-1] # remove the last words' hyps in all sentences
+    Y_inds = S_ind[:,1:] # remove the first words in all sentences
+    do_test = False
+    if S_ind_test is not None and C_ind_test is not None:
+      do_test = True
+      X_test = C_ind_test[:,:-1] if use_onto_lstm else S_ind_test[:,:-1] # remove the last words' hyps in all sentences
+      Y_inds_test = S_ind_test[:,1:]
+      vocab_size = max(Y_inds.max(), Y_inds_test.max()) + 1
+      Y_1_test, Y_2_test = self.factor_target_indices(Y_inds_test, vocab_size)
+      Y_1, Y_2 = self.factor_target_indices(Y_inds, vocab_size)
+    Y_1, Y_2 = self.factor_target_indices(Y_inds)
     length = Y_inds.shape[1]
     lstm_outdim = self.word_dim
     
@@ -87,8 +101,8 @@ class SentenceModel(object):
       lstm_out = OntoAttentionLSTM(name='sent_lstm', input_dim=self.word_dim, output_dim=lstm_outdim, input_length=length, num_senses=self.num_senses, num_hyps=self.num_hyps, return_sequences=True, use_attention=True)(reg_sent_rep)
     else:
       lstm_out = LSTM(name='sent_lstm', input_dim=self.word_dim, output_dim=lstm_outdim, input_length=length, return_sequences=True)(reg_sent_rep)
-    softmax_1 = TimeDistributed(Dense(input_dim=lstm_outdim, output_dim=factor_size, activation='softmax'))(lstm_out)
-    softmax_2 = TimeDistributed(Dense(input_dim=lstm_outdim, output_dim=factor_size, activation='softmax'))(lstm_out)
+    softmax_1 = TimeDistributed(Dense(input_dim=lstm_outdim, output_dim=Y_1.shape[-1], activation='softmax'))(lstm_out)
+    softmax_2 = TimeDistributed(Dense(input_dim=lstm_outdim, output_dim=Y_2.shape[-1], activation='softmax'))(lstm_out)
 
     model = Model(input=input, output=[softmax_1, softmax_2])
     print >>sys.stderr, model.summary()
@@ -100,6 +114,10 @@ class SentenceModel(object):
     model.fit(X, [Y_1, Y_2], nb_epoch=num_epochs, validation_split=0.1, callbacks=[early_stopping])
     posttrain_time = time.time()
     print >>sys.stderr, "Training took %d s"%(posttrain_time - postcompile_time)
+    if do_test:
+      print >>sys.stderr, "Evaluating model on test data"
+      test_loss = model.evaluate(X_test, [Y_1_test, Y_2_test])
+      print >>sys.stderr, "Test loss: %.4f"%test_loss 
     concept_reps = model.layers[1].get_weights()
     self.model = model
     return concept_reps
@@ -139,26 +157,34 @@ if __name__ == '__main__':
   argparser.add_argument('--num_hyps', type=int, help="Number of hypernyms per sense if using OntoLSTM (default 5)", default=5)
   argparser.add_argument('--use_onto_lstm', help="If this flag is not set, will use traditional LSTM", action='store_true')
   argparser.add_argument('--use_attention', help="Use attention in ontoLSTM. If this flag is not set, will use average concept representations", action='store_true')
+  argparser.add_argument('--show_attention', help="Print attention values for sentences in the test file (printed in <testfilename>.att_out)", action='store_true')
   argparser.add_argument('--synset_embedding_output', type=str, help="Print learned synset representations in the given file")
   argparser.add_argument('--num_epochs', type=int, help="Number of epochs (default 20)", default=20)
   args = argparser.parse_args()
   sm = SentenceModel(word_dim=args.dim, num_senses=args.num_senses, num_hyps=args.num_hyps)
   ts = [x.strip() for x in codecs.open(args.train_file, "r", "utf-8").readlines()]
-  if args.test_file is not None:
-    assert args.use_attention, "Use OntoLSTM with attention to print attention values of the test file"
+  if args.show_attention and (not args.use_attention or not args.use_onto_lstm):
+    raise RuntimeError, "Use OntoLSTM with attention to print attention values of the test file"
+  print >>sys.stderr, "Reading training data"
   S_ind, C_ind = sm.read_sentences(ts)
   _, train_sent_len, _, _ = C_ind.shape 
-  concept_reps = sm.train(S_ind, C_ind, use_onto_lstm=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs)
+  if args.test_file is not None:
+    print >>sys.stderr, "Reading test data"
+    ts_test = [x.strip() for x in open(args.test_file).readlines()]
+    S_ind_test, C_ind_test = sm.read_sentences(ts_test, sentlenlimit=train_sent_len)
+    concept_reps = sm.train(S_ind, C_ind, use_onto_lstm=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs, S_ind_test=S_ind_test, C_ind_test=C_ind_test)
+  else:
+    concept_reps = sm.train(S_ind, C_ind, use_onto_lstm=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs)
   if args.synset_embedding_output is not None:
     concrepfile = open(args.synset_embedding_output, "w")
     for syn in sm.dp.synset_index:
       print >>concrepfile, syn, " ".join(["%s"%x for x in concept_reps[0][sm.dp.synset_index[syn]]])
   rev_synset_ind = {ind: syn for (syn, ind) in sm.dp.synset_index.items()}
-  if args.test_file is not None:
+  if args.show_attention:
+    if args.test_file is None:
+      raise RuntimeError, "Test file not provided!"
     outfile_name = args.test_file.split("/")[-1] + ".att_out"
     outfile = open(outfile_name, "w")
-    ts_test = [x.strip() for x in open(args.test_file).readlines()]
-    _, C_ind_test = sm.read_sentences(ts_test, sentlenlimit=train_sent_len)
     C_att = sm.get_attention(C_ind_test)
     for i, (sent, sent_c_inds, sent_c_atts) in enumerate(zip(ts_test, C_ind_test, C_att)):
       print >>outfile, "SENT %d: %s"%(i, sent)

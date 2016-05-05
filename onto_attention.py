@@ -142,11 +142,11 @@ class OntoAttentionLSTM(Recurrent):
             K.set_value(self.states[1],
                         np.zeros((input_shape[0], self.output_dim)))
             K.set_value(self.states[2],
-                        np.zeros((input_shape[0], self.num_hyps)))
+                        np.zeros((input_shape[0], self.num_senses, self.num_hyps)))
         else:
             self.states = [K.zeros((input_shape[0], self.output_dim)),
                            K.zeros((input_shape[0], self.output_dim)),
-                           K.zeros((input_shape[0], self.num_hyps))]
+                           K.zeros((input_shape[0], self.num_senses, self.num_hyps))]
 
     # There are two step functions, one for output and another for attention below. Both call this function.
     def _step(self, x_cs, states):
@@ -162,7 +162,9 @@ class OntoAttentionLSTM(Recurrent):
         if self.use_attention:
             # Sense attention
             # Consider only the lowest (most specific) synset in each sense to determine sense attention
-            s_syn_proj = K.T.tensordot(x_cs[:, :, -1, :].dimshuffle(1,0,2), self.P_sense_syn_att, axes=(2,0)) # (senses, samples, proj_dim)
+            #s_syn_proj = K.T.tensordot(x_cs[:, :, -1, :].dimshuffle(1,0,2), self.P_sense_syn_att, axes=(2,0)) # (senses, samples, proj_dim)
+            # Consider an average of all syns in each sense
+            s_syn_proj = K.T.tensordot(x_cs.mean(axis=2).dimshuffle(1,0,2), self.P_sense_syn_att, axes=(2,0)) # (senses, samples, proj_dim)
             s_cont_proj = K.dot(h_tm1, self.P_sense_cont_att) # (samples, proj_dim)
             s_x_proj = K.sigmoid(s_syn_proj + s_cont_proj) # (senses, samples, proj_dim)
             sense_att = K.softmax(K.T.tensordot(s_x_proj.dimshuffle(1,0,2), self.s_sense_att, axes=(2,0))) # (samples, senses)
@@ -209,6 +211,8 @@ class OntoAttentionLSTM(Recurrent):
 
     def call(self, x, mask=None):
         # input shape: (nb_samples, time (padded with zeros), num_concepts, input_dim)
+        print "Mask: ", mask
+        #mask = None
         input_shape = self.input_spec[0].shape
 
         if self.stateful:

@@ -116,9 +116,9 @@ class EntailmentModel(object):
         sent2 = Input(name='sent2', shape=C2_ind.shape[1:], dtype='int32')
         model_inputs = [sent1, sent2]
         if embedding is None:
-          embedding_layer = HigherOrderEmbedding(input_dim=num_syns, output_dim=word_dim, name='embedding')
+          embedding_layer = HigherOrderEmbedding(input_dim=num_syns, output_dim=word_dim, name='embedding', mask_zero=True)
         else:
-          embedding_layer = HigherOrderEmbedding(input_dim=num_syns, output_dim=word_dim, weights=[embedding], name='embedding')
+          embedding_layer = HigherOrderEmbedding(input_dim=num_syns, output_dim=word_dim, weights=[embedding], name='embedding', mask_zero=True)
         sent1_embedding = embedding_layer(sent1)
         sent2_embedding = embedding_layer(sent2)
       else:
@@ -146,7 +146,7 @@ class EntailmentModel(object):
       print >>sys.stderr, "Using traditional LSTM"
       sent1 = Input(name='sent1', shape=S1_ind.shape[1:], dtype='int32')
       sent2 = Input(name='sent2', shape=S2_ind.shape[1:], dtype='int32')
-      embedding_layer = Embedding(input_dim=num_words, output_dim=word_dim, name='embedding')
+      embedding_layer = Embedding(input_dim=num_words, output_dim=word_dim, name='embedding', mask_zero=True)
       sent1_embedding = embedding_layer(sent1)
       sent2_embedding = embedding_layer(sent2)
       sent1_dropout = Dropout(0.5)(sent1_embedding)

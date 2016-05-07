@@ -123,7 +123,7 @@ class OntoAttentionLSTM(Recurrent):
         initial_state = K.zeros_like(X)  # (samples, timesteps, num_senses, num_hyps, input_dim)
         initial_state = K.sum(initial_state, axis=(1, 2, 3))  # (samples, input_dim)
         reducer = K.zeros((self.input_dim, self.output_dim))
-        initial_state = K.dot(initial_state, reducer1)  # (samples, output_dim)
+        initial_state = K.dot(initial_state, reducer)  # (samples, output_dim)
         initial_states = [initial_state, initial_state]
         return initial_states
 
@@ -204,6 +204,13 @@ class OntoAttentionLSTM(Recurrent):
 
     def get_constants(self, x):
         return []
+
+    def compute_mask(self, input, mask):
+        if self.return_sequences:
+            # Get rid of syn and hyp dimensions for computing loss
+            return mask.sum(axis=(-2, -1))
+        else:
+            return None
 
     def call(self, x, mask=None):
         # input shape: (nb_samples, time (padded with zeros), num_senses, num_hyps, input_dim)

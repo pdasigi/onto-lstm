@@ -10,28 +10,37 @@ from keras_extensions import HigherOrderEmbedding
 from keras.callbacks import EarlyStopping
 
 class EntailmentModel(object):
-  def __init__(self, embed_file, num_senses=2, num_hyps=5):
+  def __init__(self, num_senses=2, num_hyps=5, word_dim=50, embed_file=None):
     self.dp = DataProcessor(word_syn_cutoff=num_senses, syn_path_cutoff=num_hyps)
     #self.max_hyps_per_word = num_senses * num_hyps
     self.num_senses = num_senses
     self.num_hyps = num_hyps
     self.numpy_rng = numpy.random.RandomState(12345)
     self.word_rep = {}
-    self.word_rep_max = -float("inf")
-    self.word_rep_min = float("inf")
-    for line in gzip.open(embed_file):
-      ln_parts = line.strip().split()
-      if len(ln_parts) == 2:
-        continue
-      word = ln_parts[0]
-      vec = numpy.asarray([float(f) for f in ln_parts[1:]])
-      vec_max, vec_min = vec.max(), vec.min()
-      if vec_max > self.word_rep_max:
-        self.word_rep_max = vec_max
-      if vec_min < self.word_rep_min:
-        self.word_rep_min = vec_min
-      self.word_rep[word] = vec
-    self.word_dim = len(vec)
+    self.word_dim = None
+    self.word_rep_max = -1.0
+    self.word_rep_min = 1.0
+    if embed_file is not None:
+      self.word_rep_max = -float("inf")
+      self.word_rep_min = float("inf")
+      for line in gzip.open(embed_file):
+        ln_parts = line.strip().split()
+        if len(ln_parts) == 2:
+          continue
+        word = ln_parts[0]
+        vec = numpy.asarray([float(f) for f in ln_parts[1:]])
+        vec_max, vec_min = vec.max(), vec.min()
+        if vec_max > self.word_rep_max:
+          self.word_rep_max = vec_max
+        if vec_min < self.word_rep_min:
+          self.word_rep_min = vec_min
+        self.word_rep[word] = vec
+      self.word_dim = len(vec)
+    if self.word_dim is None:
+      self.word_dim = word_dim
+    else:
+      if self.word_dim != word_dim:
+        print >>sys.stderr, "Warning: Embedding file has vectors of dimensionality: %d. Ignoring provided word_dim setting."%(self.word_dim)
     self.model = None
 
   def read_sentences(self, tagged_sentences, sentlenlimit=None):
@@ -101,7 +110,6 @@ class EntailmentModel(object):
     return (S1, S2), (S1_ind, S2_ind), (C1_ind, C2_ind)
 
   def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, ontoLSTM=False, use_attention=False, num_epochs=20, embedding=None, tune_embedding=True, S1_ind_test=None, S2_ind_test=None, C1_ind_test=None, C2_ind_test=None, label_ind_test=None):
-    word_dim = 50
     assert S1_ind.shape == S2_ind.shape
     assert C1_ind.shape == C2_ind.shape
     num_words = len(self.dp.word_index)
@@ -124,9 +132,9 @@ class EntailmentModel(object):
         sent2 = Input(name='sent2', shape=C2_ind.shape[1:], dtype='int32')
         model_inputs = [sent1, sent2]
         if embedding is None:
-          embedding_layer = HigherOrderEmbedding(input_dim=num_syns, output_dim=word_dim, name='embedding', mask_zero=True)
+          embedding_layer = HigherOrderEmbedding(input_dim=num_syns, output_dim=self.word_dim, name='embedding', mask_zero=True)
         else:
-          embedding_layer = HigherOrderEmbedding(input_dim=num_syns, output_dim=word_dim, weights=[embedding], name='embedding', mask_zero=True)
+          embedding_layer = HigherOrderEmbedding(input_dim=num_syns, output_dim=self.word_dim, weights=[embedding], name='embedding', mask_zero=True)
         sent1_embedding = embedding_layer(sent1)
         sent2_embedding = embedding_layer(sent2)
       else:
@@ -137,7 +145,7 @@ class EntailmentModel(object):
         model_inputs = [sent1_embedding, sent2_embedding]
       sent1_dropout = Dropout(0.5)(sent1_embedding)
       sent2_dropout = Dropout(0.5)(sent2_embedding)
-      lstm = OntoAttentionLSTM(input_dim=word_dim, output_dim=word_dim/2, input_length=length, num_senses=self.num_senses, num_hyps=self.num_hyps, use_attention=use_attention, name='sent_lstm')
+      lstm = OntoAttentionLSTM(input_dim=self.word_dim, output_dim=self.word_dim/2, input_length=length, num_senses=self.num_senses, num_hyps=self.num_hyps, use_attention=use_attention, name='sent_lstm')
       sent1_lstm_output = lstm(sent1_dropout)
       sent2_lstm_output = lstm(sent2_dropout)
       merged_sent_rep = merge([sent1_lstm_output, sent2_lstm_output], mode='concat')
@@ -157,12 +165,12 @@ class EntailmentModel(object):
       print >>sys.stderr, "Using traditional LSTM"
       sent1 = Input(name='sent1', shape=S1_ind.shape[1:], dtype='int32')
       sent2 = Input(name='sent2', shape=S2_ind.shape[1:], dtype='int32')
-      embedding_layer = Embedding(input_dim=num_words, output_dim=word_dim, name='embedding', mask_zero=True)
+      embedding_layer = Embedding(input_dim=num_words, output_dim=self.word_dim, name='embedding', mask_zero=True)
       sent1_embedding = embedding_layer(sent1)
       sent2_embedding = embedding_layer(sent2)
       sent1_dropout = Dropout(0.5)(sent1_embedding)
       sent2_dropout = Dropout(0.5)(sent2_embedding)
-      lstm = LSTM(input_dim=word_dim, output_dim=word_dim/2, input_length=length, name='sent_lstm')
+      lstm = LSTM(input_dim=self.word_dim, output_dim=self.word_dim/2, input_length=length, name='sent_lstm')
       sent1_lstm_out = lstm(sent1_dropout)
       sent2_lstm_out = lstm(sent2_dropout)
       merged_sent_rep = merge([sent1_lstm_out, sent2_lstm_out], mode='concat')
@@ -218,8 +226,9 @@ class EntailmentModel(object):
 
 if __name__ == "__main__":
   argparser = argparse.ArgumentParser(description="Train entailment model using ontoLSTM or traditional LSTM")
-  argparser.add_argument('repfile', metavar='REP-FILE', type=str, help="Gzipped word embedding file")
   argparser.add_argument('train_file', metavar='TRAIN-FILE', type=str, help="TSV file with label, premise, hypothesis in three columns")
+  argparser.add_argument('--repfile', type=str, help="Gzipped word embedding file")
+  argparser.add_argument('--word_dim', type=int, help="Word/Synset vector size", default=50)
   argparser.add_argument('--use_onto_lstm', help="Use ontoLSTM. If this flag is not set, will use traditional LSTM", action='store_true')
   argparser.add_argument('--num_senses', type=int, help="Number of senses per word if using OntoLSTM (default 2)", default=2)
   argparser.add_argument('--num_hyps', type=int, help="Number of hypernyms per sense if using OntoLSTM (default 5)", default=5)
@@ -246,7 +255,7 @@ if __name__ == "__main__":
       synset_embedding[word] = vec
     vec_dim = len(vec)
     use_synset_embedding = True
-  em = EntailmentModel(args.repfile, num_senses=args.num_senses, num_hyps=args.num_hyps)
+  em = EntailmentModel(num_senses=args.num_senses, num_hyps=args.num_hyps, embed_file=args.repfile)
   tagged_sentences = []
   label_map = {}
   label_ind = []

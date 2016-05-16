@@ -148,7 +148,12 @@ class EntailmentModel(object):
       lstm = OntoAttentionLSTM(input_dim=self.word_dim, output_dim=self.word_dim/2, input_length=length, num_senses=self.num_senses, num_hyps=self.num_hyps, use_attention=use_attention, name='sent_lstm')
       sent1_lstm_output = lstm(sent1_dropout)
       sent2_lstm_output = lstm(sent2_dropout)
-      merged_sent_rep = merge([sent1_lstm_output, sent2_lstm_output], mode='concat')
+      sent1_lstm_output_dropout = Dropout(0.2)(sent1_lstm_output)
+      sent2_lstm_output_dropout = Dropout(0.2)(sent2_lstm_output)
+      concat_sent_rep = merge([sent1_lstm_output_dropout, sent2_lstm_output_dropout], mode='concat')
+      mul_sent_rep = merge([sent1_lstm_output_dropout, sent2_lstm_output_dropout], mode='mul')
+      diff_sent_rep = merge([sent1_lstm_output_dropout, sent2_lstm_output_dropout], mode=lambda l: l[0]-l[1], output_shape=lambda l:l[0])
+      merged_sent_rep = merge([concat_sent_rep, mul_sent_rep, diff_sent_rep], mode='concat')
       softmax = Dense(output_dim=num_label_types, activation='softmax')
       label_probs = softmax(merged_sent_rep)
       model = Model(input=model_inputs, output=label_probs)
@@ -173,7 +178,12 @@ class EntailmentModel(object):
       lstm = LSTM(input_dim=self.word_dim, output_dim=self.word_dim/2, input_length=length, name='sent_lstm')
       sent1_lstm_out = lstm(sent1_dropout)
       sent2_lstm_out = lstm(sent2_dropout)
-      merged_sent_rep = merge([sent1_lstm_out, sent2_lstm_out], mode='concat')
+      sent1_lstm_output_dropout = Dropout(0.2)(sent1_lstm_out)
+      sent2_lstm_output_dropout = Dropout(0.2)(sent2_lstm_out)
+      concat_sent_rep = merge([sent1_lstm_output_dropout, sent2_lstm_output_dropout], mode='concat')
+      mul_sent_rep = merge([sent1_lstm_output_dropout, sent2_lstm_output_dropout], mode='mul')
+      diff_sent_rep = merge([sent1_lstm_output_dropout, sent2_lstm_output_dropout], mode=lambda l: l[0]-l[1], output_shape=lambda l:l[0])
+      merged_sent_rep = merge([concat_sent_rep, mul_sent_rep, diff_sent_rep], mode='concat')
       softmax = Dense(output_dim=num_label_types, activation='softmax')
       label_probs = softmax(merged_sent_rep)
       model = Model(input=[sent1, sent2], output=label_probs)
@@ -255,7 +265,7 @@ if __name__ == "__main__":
       synset_embedding[word] = vec
     vec_dim = len(vec)
     use_synset_embedding = True
-  em = EntailmentModel(num_senses=args.num_senses, num_hyps=args.num_hyps, embed_file=args.repfile)
+  em = EntailmentModel(num_senses=args.num_senses, num_hyps=args.num_hyps, word_dim=args.word_dim, embed_file=args.repfile)
   tagged_sentences = []
   label_map = {}
   label_ind = []

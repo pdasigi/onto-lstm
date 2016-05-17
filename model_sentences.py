@@ -66,32 +66,24 @@ class SentenceModel(object):
       onehot[inds+(word_inds[inds],)] = 1
     return onehot
 
-  def _factor_target_indices(self, Y_inds, vocab_size=None, two_level=False):
+  def _factor_target_indices(self, Y_inds, vocab_size=None, base=2):
     if vocab_size is None:
       vocab_size = Y_inds.max() + 1
-    factor_size = int(math.ceil(math.sqrt(vocab_size)))
-    Y_inds_1 = numpy.asarray(Y_inds/factor_size, dtype='int32')
-    Y_inds_2 = numpy.asarray(Y_inds%factor_size, dtype='int32')
-    if two_level:
-      sec_factor_size = int(math.ceil(math.sqrt(factor_size)))
-      Y_inds_11 = numpy.asarray(Y_inds_1/sec_factor_size, dtype='int32')
-      Y_inds_12 = numpy.asarray(Y_inds_1%sec_factor_size, dtype='int32')
-      Y_inds_21 = numpy.asarray(Y_inds_2/sec_factor_size, dtype='int32')
-      Y_inds_22 = numpy.asarray(Y_inds_2%sec_factor_size, dtype='int32')
-      return [self._make_one_hot(word_inds, sec_factor_size) for word_inds in [Y_inds_11, Y_inds_12, Y_inds_21, Y_inds_22]]
-    else:
-      # Making one-hot vectors out of Y_inds_1 and Y_inds_2
-      Y_1 = self._make_one_hot(Y_inds_1, factor_size)
-      Y_2 = self._make_one_hot(Y_inds_2, factor_size)
-      return Y_1, Y_2
-    #Y_1 = numpy.zeros((Y_inds_1.shape + (factor_size,)))
-    #for inds in itertools.product(*[numpy.arange(s) for s in Y_inds_1.shape]):
-    #  Y_1[inds+(Y_inds_1[inds],)] = 1
-    #Y_2 = numpy.zeros((Y_inds_2.shape + (factor_size,)))
-    #for inds in itertools.product(*[numpy.arange(s) for s in Y_inds_2.shape]):
-    #  Y_2[inds+(Y_inds_2[inds],)] = 1
+    num_vecs = int(math.ceil(math.log(vocab_size)/math.log(base))) + 1
+    base_inds = []
+    div_Y_inds = Y_inds
+    for i in range(num_vecs):
+      new_inds = div_Y_inds % base
+      if i == num_vecs - 1:
+        if new_inds.sum() == 0:
+          # Most significant "digit" is a zero. Omit it.
+          break
+      base_inds.append(new_inds)
+      div_Y_inds = numpy.copy(div_Y_inds/base)
+    base_vecs = [self._make_one_hot(base_inds_i, base) for base_inds_i in base_inds]
+    return base_vecs
     
-  def train(self, S_ind, C_ind, use_onto_lstm=True, use_attention=True, num_epochs=20, S_ind_test=None, C_ind_test=None, two_level_factors=False):
+  def train(self, S_ind, C_ind, use_onto_lstm=True, use_attention=True, num_epochs=20, S_ind_test=None, C_ind_test=None, hierarchical=False, base=2):
     # Predict next word from current synsets
     X = C_ind[:,:-1] if use_onto_lstm else S_ind[:,:-1] # remove the last words' hyps in all sentences
     Y_inds = S_ind[:,1:] # remove the first words in all sentences
@@ -101,13 +93,18 @@ class SentenceModel(object):
       X_test = C_ind_test[:,:-1] if use_onto_lstm else S_ind_test[:,:-1] # remove the last words' hyps in all sentences
       Y_inds_test = S_ind_test[:,1:]
       vocab_size = max(Y_inds.max(), Y_inds_test.max()) + 1
-      test_targets = self._factor_target_indices(Y_inds_test, vocab_size, two_level=two_level_factors)
-      train_targets = self._factor_target_indices(Y_inds, vocab_size, two_level=two_level_factors)
-      #Y_1_test, Y_2_test = self._factor_target_indices(Y_inds_test, vocab_size)
-      #Y_1, Y_2 = self._factor_target_indices(Y_inds, vocab_size)
+      if hierarchical:
+        test_targets = self._factor_target_indices(Y_inds_test, vocab_size, base=base)
+        train_targets = self._factor_target_indices(Y_inds, vocab_size, base=base)
+      else:
+        train_targets = [self._make_one_hot(Y_inds, vocab_size)]
+        test_targets = [self._make_one_hot(Y_inds_test, vocab_size)]
     else:
-      train_targets = self._factor_target_indices(Y_inds, two_level=two_level_factors)
-      #Y_1, Y_2 = self._factor_target_indices(Y_inds)
+      if hierarchical:
+        train_targets = self._factor_target_indices(Y_inds, base=base)
+      else:
+        train_targets = [self._make_one_hot(Y_inds, Y_inds.max() + 1)]
+      prev_train_targets = list(train_targets)
     length = Y_inds.shape[1]
     lstm_outdim = self.word_dim
     
@@ -115,10 +112,11 @@ class SentenceModel(object):
     num_syns = len(self.dp.synset_index)
     input = Input(shape=X.shape[1:], dtype='int32')
     embed_input_dim = num_syns if use_onto_lstm else num_words
-    sent_rep = HigherOrderEmbedding(name='embedding', input_dim=embed_input_dim, output_dim=self.word_dim, input_shape=X.shape[1:], mask_zero=True)(input)
+    embed_layer = HigherOrderEmbedding(name='embedding', input_dim=embed_input_dim, output_dim=self.word_dim, input_shape=X.shape[1:], mask_zero=True)
+    sent_rep = embed_layer(input)
     reg_sent_rep = Dropout(0.5)(sent_rep)
     if use_onto_lstm:
-      lstm_out = OntoAttentionLSTM(name='sent_lstm', input_dim=self.word_dim, output_dim=lstm_outdim, input_length=length, num_senses=self.num_senses, num_hyps=self.num_hyps, return_sequences=True, use_attention=True)(reg_sent_rep)
+      lstm_out = OntoAttentionLSTM(name='sent_lstm', input_dim=self.word_dim, output_dim=lstm_outdim, input_length=length, num_senses=self.num_senses, num_hyps=self.num_hyps, return_sequences=True, use_attention=use_attention)(reg_sent_rep)
     else:
       lstm_out = LSTM(name='sent_lstm', input_dim=self.word_dim, output_dim=lstm_outdim, input_length=length, return_sequences=True)(reg_sent_rep)
     output_nodes = []
@@ -126,9 +124,6 @@ class SentenceModel(object):
     for target in train_targets:
       node = TimeDistributed(Dense(input_dim=lstm_outdim, output_dim=target.shape[-1], activation='softmax'))(lstm_out)
       output_nodes.append(node)
-
-    #softmax_1 = TimeDistributed(Dense(input_dim=lstm_outdim, output_dim=Y_1.shape[-1], activation='softmax'))(lstm_out)
-    #softmax_2 = TimeDistributed(Dense(input_dim=lstm_outdim, output_dim=Y_2.shape[-1], activation='softmax'))(lstm_out)
 
     model = Model(input=input, output=output_nodes)
     print >>sys.stderr, model.summary()
@@ -184,7 +179,7 @@ if __name__ == '__main__':
   argparser.add_argument('--use_onto_lstm', help="If this flag is not set, will use traditional LSTM", action='store_true')
   argparser.add_argument('--use_attention', help="Use attention in ontoLSTM. If this flag is not set, will use average concept representations", action='store_true')
   argparser.add_argument('--show_attention', help="Print attention values for sentences in the test file (printed in <testfilename>.att_out)", action='store_true')
-  argparser.add_argument('--two_level_factors', help="Use two level factors in training", action='store_true')
+  argparser.add_argument('--hierarchical', type=int, help="Use hierarchical softmax with the provided number of classes per factor")
   argparser.add_argument('--synset_embedding_output', type=str, help="Print learned synset representations in the given file")
   argparser.add_argument('--num_epochs', type=int, help="Number of epochs (default 20)", default=20)
   args = argparser.parse_args()
@@ -194,14 +189,19 @@ if __name__ == '__main__':
     raise RuntimeError, "Use OntoLSTM with attention to print attention values of the test file"
   print >>sys.stderr, "Reading training data"
   S_ind, C_ind = sm.read_sentences(ts)
-  _, train_sent_len, _, _ = C_ind.shape 
+  _, train_sent_len, _, _ = C_ind.shape
+  hierarchical = False
+  base = 2
+  if args.hierarchical is not None:
+    hierarchical = True
+    base = args.hierarchical 
   if args.test_file is not None:
     print >>sys.stderr, "Reading test data"
     ts_test = [x.strip() for x in codecs.open(args.test_file, "r", "utf-8").readlines()]
     S_ind_test, C_ind_test = sm.read_sentences(ts_test, sentlenlimit=train_sent_len)
-    concept_reps = sm.train(S_ind, C_ind, use_onto_lstm=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs, S_ind_test=S_ind_test, C_ind_test=C_ind_test, two_level_factors=args.two_level_factors)
+    concept_reps = sm.train(S_ind, C_ind, use_onto_lstm=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs, S_ind_test=S_ind_test, C_ind_test=C_ind_test, hierarchical=hierarchical, base=base)
   else:
-    concept_reps = sm.train(S_ind, C_ind, use_onto_lstm=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs, two_level_factors=args.two_level_factors)
+    concept_reps = sm.train(S_ind, C_ind, use_onto_lstm=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs, hierarchical=hierarchical, base=base)
   if args.synset_embedding_output is not None:
     concrepfile = open(args.synset_embedding_output, "w")
     for syn in sm.dp.synset_index:

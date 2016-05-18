@@ -109,7 +109,7 @@ class EntailmentModel(object):
           C2_ind[i][-sent2len+j][-sense_syn_ind_len+k][-len(syn_ind):] = syn_ind
     return (S1, S2), (S1_ind, S2_ind), (C1_ind, C2_ind)
 
-  def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, ontoLSTM=False, use_attention=False, num_epochs=20, embedding=None, tune_embedding=True, S1_ind_test=None, S2_ind_test=None, C1_ind_test=None, C2_ind_test=None, label_ind_test=None):
+  def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, ontoLSTM=False, use_attention=False, num_epochs=20, mlp_size=1024, embedding=None, tune_embedding=True, S1_ind_test=None, S2_ind_test=None, C1_ind_test=None, C2_ind_test=None, label_ind_test=None):
     assert S1_ind.shape == S2_ind.shape
     assert C1_ind.shape == C2_ind.shape
     num_words = len(self.dp.word_index)
@@ -154,13 +154,16 @@ class EntailmentModel(object):
       mul_sent_rep = merge([sent1_lstm_output_dropout, sent2_lstm_output_dropout], mode='mul')
       diff_sent_rep = merge([sent1_lstm_output_dropout, sent2_lstm_output_dropout], mode=lambda l: l[0]-l[1], output_shape=lambda l:l[0])
       merged_sent_rep = merge([concat_sent_rep, mul_sent_rep, diff_sent_rep], mode='concat')
+      relu1 = Dense(output_dim=mlp_size, activation='relu')
+      relu2 = Dense(output_dim=mlp_size, activation='relu')
       softmax = Dense(output_dim=num_label_types, activation='softmax')
-      label_probs = softmax(merged_sent_rep)
+      label_probs = softmax(relu2(relu1(merged_sent_rep)))
       model = Model(input=model_inputs, output=label_probs)
       print >>sys.stderr, model.summary()
       model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
       data_size = C1_ind.shape[0]
-      train_size = int(data_size * 0.9)
+      #train_size = int(data_size * 0.9)
+      train_size = data_size - 10000
       model.fit([C1_ind[:train_size], C2_ind[:train_size]], label_onehot[:train_size], nb_epoch=20, validation_data=([C1_ind[train_size:], C2_ind[train_size:]], label_onehot[train_size:]), callbacks=[early_stopping])
       if do_test:
         test_metrics = model.evaluate([C1_ind_test, C2_ind_test], label_onehot_test)
@@ -184,13 +187,16 @@ class EntailmentModel(object):
       mul_sent_rep = merge([sent1_lstm_output_dropout, sent2_lstm_output_dropout], mode='mul')
       diff_sent_rep = merge([sent1_lstm_output_dropout, sent2_lstm_output_dropout], mode=lambda l: l[0]-l[1], output_shape=lambda l:l[0])
       merged_sent_rep = merge([concat_sent_rep, mul_sent_rep, diff_sent_rep], mode='concat')
+      relu1 = Dense(output_dim=mlp_size, activation='relu')
+      relu2 = Dense(output_dim=mlp_size, activation='relu')
       softmax = Dense(output_dim=num_label_types, activation='softmax')
-      label_probs = softmax(merged_sent_rep)
+      label_probs = softmax(relu2(relu1(merged_sent_rep)))
       model = Model(input=[sent1, sent2], output=label_probs)
       print >>sys.stderr, model.summary()
       model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
       data_size = S1_ind.shape[0]
-      train_size = int(data_size * 0.9)
+      #train_size = int(data_size * 0.9)
+      train_size = data_size - 10000
       model.fit([S1_ind[:train_size], S2_ind[:train_size]], label_onehot[:train_size], nb_epoch=20, validation_data=([S1_ind[train_size:], S2_ind[train_size:]], label_onehot[train_size:]), callbacks=[early_stopping])
       if do_test:
         test_metrics = model.evaluate([S1_ind_test, S2_ind_test], label_onehot_test)

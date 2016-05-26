@@ -4,7 +4,7 @@ import gzip
 import argparse
 from index_data import DataProcessor
 from onto_attention import OntoAttentionLSTM
-from keras.models import Model
+from keras.models import Model, model_from_yaml
 from keras.layers import Activation, Dense, Dropout, Embedding, Input, LSTM, merge
 from keras_extensions import HigherOrderEmbedding
 from keras.callbacks import EarlyStopping
@@ -109,7 +109,7 @@ class EntailmentModel(object):
           C2_ind[i][-sent2len+j][-sense_syn_ind_len+k][-len(syn_ind):] = syn_ind
     return (S1, S2), (S1_ind, S2_ind), (C1_ind, C2_ind)
 
-  def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, ontoLSTM=False, use_attention=False, num_epochs=20, mlp_size=1024, embedding=None, tune_embedding=True, S1_ind_test=None, S2_ind_test=None, C1_ind_test=None, C2_ind_test=None, label_ind_test=None):
+  def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, ontoLSTM=False, use_attention=False, num_epochs=20, mlp_size=1024, embedding=None, tune_embedding=True):
     assert S1_ind.shape == S2_ind.shape
     assert C1_ind.shape == C2_ind.shape
     num_words = len(self.dp.word_index)
@@ -118,12 +118,6 @@ class EntailmentModel(object):
     label_onehot = numpy.zeros((len(label_ind), num_label_types))
     for i, ind in enumerate(label_ind):
       label_onehot[i][ind] = 1.0
-    do_test = False
-    if label_ind_test is not None:
-      label_onehot_test = numpy.zeros((len(label_ind_test), num_label_types))
-      for i, ind in enumerate(label_ind_test):
-        label_onehot_test[i][ind] = 1.0
-      do_test = True
     early_stopping = EarlyStopping(monitor='val_acc', patience=1)
     if ontoLSTM:
       print >>sys.stderr, "Using OntoLSTM"
@@ -166,9 +160,6 @@ class EntailmentModel(object):
       train_size = data_size - 10000
       train_size = int(0.1 * data_size) if train_size < 0 else train_size
       model.fit([C1_ind[:train_size], C2_ind[:train_size]], label_onehot[:train_size], nb_epoch=20, validation_data=([C1_ind[train_size:], C2_ind[train_size:]], label_onehot[train_size:]), callbacks=[early_stopping])
-      if do_test:
-        test_metrics = model.evaluate([C1_ind_test, C2_ind_test], label_onehot_test)
-        print >>sys.stderr, "Test accuracy: %.4f"%(test_metrics[1])
       self.model = model
     else:
       print >>sys.stderr, "Using traditional LSTM"
@@ -200,10 +191,23 @@ class EntailmentModel(object):
       train_size = data_size - 10000
       train_size = int(0.1 * data_size) if train_size < 0 else train_size
       model.fit([S1_ind[:train_size], S2_ind[:train_size]], label_onehot[:train_size], nb_epoch=20, validation_data=([S1_ind[train_size:], S2_ind[train_size:]], label_onehot[train_size:]), callbacks=[early_stopping])
-      if do_test:
-        test_metrics = model.evaluate([S1_ind_test, S2_ind_test], label_onehot_test)
-        print >>sys.stderr, "Test accuracy: %.4f"%(test_metrics[1])
       self.model = model
+
+  def test(self, label_ind_test, use_onto_lstm, S1_ind_test=None, S2_ind_test=None, C1_ind_test=None, C2_ind_test=None, num_label_types=3):
+    if not self.model:
+      raise RuntimeError, "Model not trained!"
+    label_onehot_test = numpy.zeros((len(label_ind_test), num_label_types))
+    for i, ind in enumerate(label_ind_test):
+      label_onehot_test[i][ind] = 1.0
+    if use_onto_lstm:
+      test_metrics = self.model.evaluate([C1_ind_test, C2_ind_test], label_onehot_test)
+      print >>sys.stderr, "Test accuracy: %.4f"%(test_metrics[1])
+      predictions = numpy.argmax(self.model.predict([C1_ind_test, C2_ind_test]), axis=1)
+    else:
+      test_metrics = self.model.evaluate([S1_ind_test, S2_ind_test], label_onehot_test)
+      print >>sys.stderr, "Test accuracy: %.4f"%(test_metrics[1])
+      predictions = numpy.argmax(self.model.predict([S1_ind_test, S2_ind_test]), axis=1)
+    return predictions
 
   def get_attention(self, C_ind, embedding=None):
     if not self.model:
@@ -244,7 +248,7 @@ class EntailmentModel(object):
 
 if __name__ == "__main__":
   argparser = argparse.ArgumentParser(description="Train entailment model using ontoLSTM or traditional LSTM")
-  argparser.add_argument('train_file', metavar='TRAIN-FILE', type=str, help="TSV file with label, premise, hypothesis in three columns")
+  argparser.add_argument('--train_file', type=str, help="TSV file with label, premise, hypothesis in three columns")
   argparser.add_argument('--repfile', type=str, help="Gzipped word embedding file")
   argparser.add_argument('--word_dim', type=int, help="Word/Synset vector size", default=50)
   argparser.add_argument('--use_onto_lstm', help="Use ontoLSTM. If this flag is not set, will use traditional LSTM", action='store_true')
@@ -279,12 +283,15 @@ if __name__ == "__main__":
   label_ind = []
   sentlenlimit = None
   do_test = False
+  do_train = False
   S1_ind_test = None
   S2_ind_test = None
   C1_ind_test = None
   C2_ind_test = None
   label_ind_test = None
   max_test_sentlen = 0
+  model_name_prefix = "ent_model_ontolstm=%s_att=%s_senses=%d_hyps=%d"%(str(args.use_onto_lstm), str(args.use_attention), args.num_senses, args.num_hyps)
+  
   if args.test_file is not None:
     print >>sys.stderr, "Reading test data"
     tagged_sentences_test = []
@@ -300,49 +307,72 @@ if __name__ == "__main__":
         max_test_sentlen = test_sentlen
       tagged_sentences_test.append(tagged_sentence)
     do_test = True
-  print >>sys.stderr, "Reading training data"
-  max_train_sentlen = 0
-  for line in open(args.train_file):
-    lnstrp = line.strip()
-    label, tagged_sentence = lnstrp.split("\t")
-    if label not in label_map:
-      label_map[label] = len(label_map)
-    label_ind.append(label_map[label])
-    train_sentlen = len(tagged_sentence.split())
-    if train_sentlen > max_train_sentlen:
-      max_train_sentlen = train_sentlen
-    tagged_sentences.append(tagged_sentence)
-  max_sentlen = max(max_train_sentlen, max_test_sentlen)
-  print >>sys.stderr, "Indexing training data"
-  _, (S1_ind, S2_ind), (C1_ind, C2_ind) = em.read_sentences(tagged_sentences, sentlenlimit=max_sentlen)
+  if args.train_file is not None:
+    print >>sys.stderr, "Reading training data"
+    max_train_sentlen = 0
+    for line in open(args.train_file):
+      lnstrp = line.strip()
+      label, tagged_sentence = lnstrp.split("\t")
+      if label not in label_map:
+        label_map[label] = len(label_map)
+      label_ind.append(label_map[label])
+      train_sentlen = len(tagged_sentence.split())
+      if train_sentlen > max_train_sentlen:
+        max_train_sentlen = train_sentlen
+      tagged_sentences.append(tagged_sentence)
+    max_sentlen = max(max_train_sentlen, max_test_sentlen)
+    print >>sys.stderr, "Indexing training data"
+    _, (S1_ind, S2_ind), (C1_ind, C2_ind) = em.read_sentences(tagged_sentences, sentlenlimit=max_sentlen)
+    do_train = True
+  else:
+    print >>sys.stderr, "Loading stored model"
+    em.model = model_from_yaml(open("%s.yaml"%model_name_prefix).read())
+    em.model.load_weights("%s.h5"%model_name_prefix)
+    em.model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+    max_sentlen = em.model.get_input_shape_at(0)[0][1]
+
   if do_test:
     print >>sys.stderr, "Indexing test data"
     _, (S1_ind_test, S2_ind_test), (C1_ind_test, C2_ind_test) = em.read_sentences(tagged_sentences_test, sentlenlimit=max_sentlen)
-  if use_synset_embedding:
-    ind_synset_embedding = em.numpy_rng.uniform(low=vec_min, high=vec_max, size=(len(em.dp.synset_index), vec_dim))
-    for syn in em.dp.synset_index:
-      if syn in synset_embedding:
-        ind_synset_embedding[em.dp.synset_index[syn]] = synset_embedding[syn]
-    print >>sys.stderr, "Using pretrained synset embeddings"
-    em.train(S1_ind, S2_ind, C1_ind, C2_ind, label_ind, len(label_map), ontoLSTM=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs, embedding=ind_synset_embedding, S1_ind_test=S1_ind_test, S2_ind_test=S2_ind_test, C1_ind_test=C1_ind_test, C2_ind_test=C2_ind_test, label_ind_test=label_ind_test)
-  else: 
-    print >>sys.stderr, "Will learn synset embeddings"
-    em.train(S1_ind, S2_ind, C1_ind, C2_ind, label_ind, len(label_map), ontoLSTM=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs, S1_ind_test=S1_ind_test, S2_ind_test=S2_ind_test, C1_ind_test=C1_ind_test, C2_ind_test=C2_ind_test, label_ind_test=label_ind_test)
-  model_yaml_string = em.model.to_yaml()
-  model_name_prefix = "ent_model_ontolstm=%s_att=%s_senses=%d_hyps=%d"%(str(args.use_onto_lstm), str(args.use_attention), args.num_senses, args.num_hyps)
-  open("%s.yaml"%model_name_prefix, "w").write(model_yaml_string)
-  em.model.save_weights("%s.h5"%model_name_prefix)
+  
+
+  if do_train:
+    print >>sys.stderr, "Training on provided data"
+    if use_synset_embedding:
+      ind_synset_embedding = em.numpy_rng.uniform(low=vec_min, high=vec_max, size=(len(em.dp.synset_index), vec_dim))
+      for syn in em.dp.synset_index:
+        if syn in synset_embedding:
+          ind_synset_embedding[em.dp.synset_index[syn]] = synset_embedding[syn]
+      print >>sys.stderr, "Using pretrained synset embeddings"
+      em.train(S1_ind, S2_ind, C1_ind, C2_ind, label_ind, len(label_map), ontoLSTM=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs, embedding=ind_synset_embedding)
+    else: 
+      print >>sys.stderr, "Will learn synset embeddings"
+      em.train(S1_ind, S2_ind, C1_ind, C2_ind, label_ind, len(label_map), ontoLSTM=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs)
+  
+    model_yaml_string = em.model.to_yaml()
+    open("%s.yaml"%model_name_prefix, "w").write(model_yaml_string)
+    em.model.save_weights("%s.h5"%model_name_prefix)
+  
+  if do_test:
+    predictions = em.test(label_ind_test, use_onto_lstm=args.use_onto_lstm, S1_ind_test=S1_ind_test, S2_ind_test=S2_ind_test, C1_ind_test=C1_ind_test, C2_ind_test=C2_ind_test)
+    rev_label_map = {v:k for k, v in label_map.items()}
+    test_outfile = open("%s.out"%model_name_prefix, "w")
+    for pred in predictions:
+      print >>test_outfile, rev_label_map[pred] 
+    test_outfile.close()
   if args.attention_output is not None:
+    if not do_test:
+      raise RuntimeError, "Provide a test file"
     rev_synset_ind = {ind: syn for (syn, ind) in em.dp.synset_index.items()}
-    sample_size = int(C1_ind.shape[0] * 0.1)
-    C_ind = numpy.concatenate([C1_ind[-sample_size:], C2_ind[-sample_size:]])
+    #sample_size = int(C1_ind.shape[0] * 0.1)
+    C_ind = numpy.concatenate([C1_ind_test, C2_ind_test])
     C_att = em.get_attention(C_ind, ind_synset_embedding) if args.fix_embedding else em.get_attention(C_ind) 
     C1_att, C2_att = numpy.split(C_att, 2)
     # Concatenate sentence 1 and 2 in each data point
-    C_sj_ind = numpy.concatenate([C1_ind[-sample_size:], C2_ind[-sample_size:]], axis=1)
+    C_sj_ind = numpy.concatenate([C1_ind_test, C2_ind_test], axis=1)
     C_sj_att = numpy.concatenate([C1_att, C2_att], axis=1)
     outfile = open(args.attention_output, "w")
-    for i, (sent, sent_c_inds, sent_c_atts) in enumerate(zip(tagged_sentences[-sample_size:], C_sj_ind, C_sj_att)):
+    for i, (sent, sent_c_inds, sent_c_atts) in enumerate(zip(tagged_sentences_test, C_sj_ind, C_sj_att)):
       print >>outfile, "SENT %d: %s"%(i, sent)
       words = sent.replace(" |||", "").split()
       word_id = 0

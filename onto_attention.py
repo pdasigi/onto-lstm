@@ -227,7 +227,7 @@ class OntoAttentionLSTM(Recurrent):
                                 initial_states,
                                 go_backwards=self.go_backwards,
                                 mask=mask, constants=constants,
-                                unroll=self.unroll, input_length=input_shape[1], elminate_mask_dims=[-3, -2])
+                                unroll=self.unroll, input_length=input_shape[1], eliminate_mask_dims=[-3, -2])
             return attention
         else:
             last_output, outputs, states = rnn(self.step, x,

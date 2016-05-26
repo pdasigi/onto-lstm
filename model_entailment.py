@@ -164,6 +164,7 @@ class EntailmentModel(object):
       data_size = C1_ind.shape[0]
       #train_size = int(data_size * 0.9)
       train_size = data_size - 10000
+      train_size = int(0.1 * data_size) if train_size < 0 else train_size
       model.fit([C1_ind[:train_size], C2_ind[:train_size]], label_onehot[:train_size], nb_epoch=20, validation_data=([C1_ind[train_size:], C2_ind[train_size:]], label_onehot[train_size:]), callbacks=[early_stopping])
       if do_test:
         test_metrics = model.evaluate([C1_ind_test, C2_ind_test], label_onehot_test)
@@ -197,6 +198,7 @@ class EntailmentModel(object):
       data_size = S1_ind.shape[0]
       #train_size = int(data_size * 0.9)
       train_size = data_size - 10000
+      train_size = int(0.1 * data_size) if train_size < 0 else train_size
       model.fit([S1_ind[:train_size], S2_ind[:train_size]], label_onehot[:train_size], nb_epoch=20, validation_data=([S1_ind[train_size:], S2_ind[train_size:]], label_onehot[train_size:]), callbacks=[early_stopping])
       if do_test:
         test_metrics = model.evaluate([S1_ind_test, S2_ind_test], label_onehot_test)
@@ -326,7 +328,10 @@ if __name__ == "__main__":
   else: 
     print >>sys.stderr, "Will learn synset embeddings"
     em.train(S1_ind, S2_ind, C1_ind, C2_ind, label_ind, len(label_map), ontoLSTM=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs, S1_ind_test=S1_ind_test, S2_ind_test=S2_ind_test, C1_ind_test=C1_ind_test, C2_ind_test=C2_ind_test, label_ind_test=label_ind_test)
-
+  model_yaml_string = em.model.to_yaml()
+  model_name_prefix = "ent_model_ontolstm=%s_att=%s_senses=%d_hyps=%d"%(str(args.use_onto_lstm), str(args.use_attention), args.num_senses, args.num_hyps)
+  open("%s.yaml"%model_name_prefix, "w").write(model_yaml_string)
+  em.model.save_weights("%s.h5"%model_name_prefix)
   if args.attention_output is not None:
     rev_synset_ind = {ind: syn for (syn, ind) in em.dp.synset_index.items()}
     sample_size = int(C1_ind.shape[0] * 0.1)

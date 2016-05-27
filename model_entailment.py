@@ -159,7 +159,7 @@ class EntailmentModel(object):
       data_size = C1_ind.shape[0]
       #train_size = int(data_size * 0.9)
       train_size = max(data_size - 10000, 0.9*data_size)
-      model.fit([C1_ind[:train_size], C2_ind[:train_size]], label_onehot[:train_size], nb_epoch=20, validation_data=([C1_ind[train_size:], C2_ind[train_size:]], label_onehot[train_size:]), callbacks=[early_stopping])
+      model.fit([C1_ind[:train_size], C2_ind[:train_size]], label_onehot[:train_size], nb_epoch=num_epochs, validation_data=([C1_ind[train_size:], C2_ind[train_size:]], label_onehot[train_size:]), callbacks=[early_stopping])
       self.model = model
     else:
       print >>sys.stderr, "Using traditional LSTM"
@@ -189,7 +189,7 @@ class EntailmentModel(object):
       data_size = S1_ind.shape[0]
       #train_size = int(data_size * 0.9)
       train_size = max(data_size - 10000, 0.9*data_size)
-      model.fit([S1_ind[:train_size], S2_ind[:train_size]], label_onehot[:train_size], nb_epoch=20, validation_data=([S1_ind[train_size:], S2_ind[train_size:]], label_onehot[train_size:]), callbacks=[early_stopping])
+      model.fit([S1_ind[:train_size], S2_ind[:train_size]], label_onehot[:train_size], nb_epoch=num_epochs, validation_data=([S1_ind[train_size:], S2_ind[train_size:]], label_onehot[train_size:]), callbacks=[early_stopping])
       self.model = model
 
   def test(self, label_ind_test, use_onto_lstm, S1_ind_test=None, S2_ind_test=None, C1_ind_test=None, C2_ind_test=None, num_label_types=3):
@@ -325,12 +325,12 @@ if __name__ == "__main__":
     do_train = True
   else:
     print >>sys.stderr, "Loading stored model"
-    em.model = model_from_yaml(open("%s.yaml"%model_name_prefix).read())
+    em.model = model_from_yaml(open("%s.yaml"%model_name_prefix).read(), custom_objects={"HigherOrderEmbedding": HigherOrderEmbedding, "OntoAttentionLSTM": OntoAttentionLSTM})
+    print >>sys.stderr, em.model.summary()
     em.model.load_weights("%s.h5"%model_name_prefix)
     em.model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
     dataproc_pkl_file = open("%s_dataproc.pkl"%model_name_prefix)
     em.dp = pickle.load(dataproc_pkl_file)
-    print >>sys.stderr, em.model.summary()
     max_sentlen = em.model.get_input_shape_at(0)[0][1]
 
   if do_test:
@@ -356,17 +356,6 @@ if __name__ == "__main__":
     em.model.save_weights("%s.h5"%model_name_prefix, overwrite=True)
     dataproc_pkl_file = open("%s_dataproc.pkl"%model_name_prefix, "w")
     pickle.dump(em.dp, dataproc_pkl_file)
-    """
-    saved_model = model_from_yaml(open("%s.yaml"%model_name_prefix).read())
-    saved_model.load_weights("%s.h5"%model_name_prefix)
-    saved_model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-    for l1, l2 in zip(em.model.layers, saved_model.layers):
-      if l1.name == "sent1" or l1.name == "sent2":
-        continue
-      print l1.name, l2.name
-      for l1_p, l2_p in zip(l1.get_weights(), l2.get_weights()):
-        print numpy.array_equal(l1_p, l2_p)
-    """
   if do_test:
     predictions = em.test(label_ind_test, use_onto_lstm=args.use_onto_lstm, S1_ind_test=S1_ind_test, S2_ind_test=S2_ind_test, C1_ind_test=C1_ind_test, C2_ind_test=C2_ind_test)
     rev_label_map = {v:k for k, v in label_map.items()}
@@ -378,7 +367,6 @@ if __name__ == "__main__":
     if not do_test:
       raise RuntimeError, "Provide a test file"
     rev_synset_ind = {ind: syn for (syn, ind) in em.dp.synset_index.items()}
-    #sample_size = int(C1_ind.shape[0] * 0.1)
     C_ind = numpy.concatenate([C1_ind_test, C2_ind_test])
     C_att = em.get_attention(C_ind, ind_synset_embedding) if args.fix_embedding else em.get_attention(C_ind) 
     C1_att, C2_att = numpy.split(C_att, 2)

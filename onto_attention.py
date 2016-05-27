@@ -101,14 +101,14 @@ class OntoAttentionLSTM(Recurrent):
         if self.use_attention:
             # Following are the attention parameters
             # Sense projection and scoring
-            self.P_sense_syn_att = self.inner_init((input_dim, self.output_dim)) # Projection operator for synsets
-            self.P_sense_cont_att = self.inner_init((self.output_dim, self.output_dim)) # Projection operator for hidden state (context)
-            self.s_sense_att = self.init((self.output_dim,))
+            self.P_sense_syn_att = self.inner_init((input_dim, self.output_dim), name='{}_P_sense_syn_att'.format(self.name)) # Projection operator for synsets
+            self.P_sense_cont_att = self.inner_init((self.output_dim, self.output_dim), name='{}_P_sense_cont_att'.format(self.name)) # Projection operator for hidden state (context)
+            self.s_sense_att = self.init((self.output_dim,), name='{}_s_senses_att'.format(self.name))
 
             # Generalization projection and scoring
-            self.P_gen_syn_att = self.inner_init((input_dim, self.output_dim)) # Projection operator for synsets
-            self.P_gen_cont_att = self.inner_init((self.output_dim, self.output_dim)) # Projection operator for hidden state (context)
-            self.s_gen_att = self.init((self.output_dim,))
+            self.P_gen_syn_att = self.inner_init((input_dim, self.output_dim), name='{}_P_sense_gen_att'.format(self.name)) # Projection operator for synsets
+            self.P_gen_cont_att = self.inner_init((self.output_dim, self.output_dim), name='{}_P_gen_cont_att'.format(self.name)) # Projection operator for hidden state (context)
+            self.s_gen_att = self.init((self.output_dim,), name='{}_s_gen_att'.format(self.name))
 
             self.trainable_weights.extend([self.P_sense_syn_att, self.P_sense_cont_att, self.s_sense_att,
                                            self.P_gen_syn_att, self.P_gen_cont_att, self.s_gen_att])
@@ -251,6 +251,8 @@ class OntoAttentionLSTM(Recurrent):
                   "inner_init": self.inner_init.__name__,
                   "forget_bias_init": self.forget_bias_init.__name__,
                   "activation": self.activation.__name__,
-                  "inner_activation": self.inner_activation.__name__}
+                  "inner_activation": self.inner_activation.__name__,
+                  "use_attention": self.use_attention,
+                  "return_attention": self.return_attention}
         base_config = super(OntoAttentionLSTM, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))

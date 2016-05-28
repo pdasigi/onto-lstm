@@ -6,9 +6,10 @@ import itertools
 import time
 import codecs
 import argparse
+import pickle
 from index_data import DataProcessor
 from onto_attention import OntoAttentionLSTM
-from keras.models import Model
+from keras.models import Model, model_from_yaml
 from keras.layers import Input, Dropout, LSTM, Dense
 from keras.layers.wrappers import TimeDistributed
 from keras.callbacks import EarlyStopping
@@ -23,7 +24,7 @@ class SentenceModel(object):
     self.word_dim = word_dim
     self.model = None
 
-  def read_sentences(self, tagged_sentences, sentlenlimit=None):
+  def read_sentences(self, tagged_sentences, sentlenlimit=None, test=False):
     num_sentences = len(tagged_sentences)
     all_words = []
     all_pos_tags = []
@@ -51,7 +52,8 @@ class SentenceModel(object):
     S_ind = numpy.zeros((num_sentences, sentlenlimit), dtype='int32')
     for i, (words, pos_tags) in enumerate(zip(all_words, all_pos_tags)):
       sentlen = len(words)
-      word_inds, syn_inds = self.dp.index_sentence(words, pos_tags)
+      # test=True locks the word and syn index dicts. No new keys will be added
+      word_inds, syn_inds = self.dp.index_sentence(words, pos_tags, test=test)
       S_ind[i][-sentlen:] = word_inds
       for j in range(sentlen):
         sense_syn_ind = syn_inds[j]
@@ -69,9 +71,11 @@ class SentenceModel(object):
   def _factor_target_indices(self, Y_inds, vocab_size=None, base=2):
     if vocab_size is None:
       vocab_size = Y_inds.max() + 1
+    print >>sys.stderr, "Factoring targets of vocabulary size: %d"%(vocab_size)
     num_vecs = int(math.ceil(math.log(vocab_size)/math.log(base))) + 1
     base_inds = []
     div_Y_inds = Y_inds
+    print >>sys.stderr, "Number of factors: %d"%num_vecs
     for i in range(num_vecs):
       new_inds = div_Y_inds % base
       if i == num_vecs - 1:
@@ -83,28 +87,14 @@ class SentenceModel(object):
     base_vecs = [self._make_one_hot(base_inds_i, base) for base_inds_i in base_inds]
     return base_vecs
     
-  def train(self, S_ind, C_ind, use_onto_lstm=True, use_attention=True, num_epochs=20, S_ind_test=None, C_ind_test=None, hierarchical=False, base=2):
+  def train(self, S_ind, C_ind, use_onto_lstm=True, use_attention=True, num_epochs=20,  hierarchical=False, base=2):
     # Predict next word from current synsets
     X = C_ind[:,:-1] if use_onto_lstm else S_ind[:,:-1] # remove the last words' hyps in all sentences
     Y_inds = S_ind[:,1:] # remove the first words in all sentences
-    do_test = False
-    if S_ind_test is not None and C_ind_test is not None:
-      do_test = True
-      X_test = C_ind_test[:,:-1] if use_onto_lstm else S_ind_test[:,:-1] # remove the last words' hyps in all sentences
-      Y_inds_test = S_ind_test[:,1:]
-      vocab_size = max(Y_inds.max(), Y_inds_test.max()) + 1
-      if hierarchical:
-        test_targets = self._factor_target_indices(Y_inds_test, vocab_size, base=base)
-        train_targets = self._factor_target_indices(Y_inds, vocab_size, base=base)
-      else:
-        train_targets = [self._make_one_hot(Y_inds, vocab_size)]
-        test_targets = [self._make_one_hot(Y_inds_test, vocab_size)]
+    if hierarchical:
+      train_targets = self._factor_target_indices(Y_inds, base=base)
     else:
-      if hierarchical:
-        train_targets = self._factor_target_indices(Y_inds, base=base)
-      else:
-        train_targets = [self._make_one_hot(Y_inds, Y_inds.max() + 1)]
-      prev_train_targets = list(train_targets)
+      train_targets = [self._make_one_hot(Y_inds, Y_inds.max() + 1)]
     length = Y_inds.shape[1]
     lstm_outdim = self.word_dim
     
@@ -135,13 +125,20 @@ class SentenceModel(object):
     model.fit(X, train_targets, nb_epoch=num_epochs, validation_split=0.1, callbacks=[early_stopping])
     posttrain_time = time.time()
     print >>sys.stderr, "Training took %d s"%(posttrain_time - postcompile_time)
-    if do_test:
-      print >>sys.stderr, "Evaluating model on test data"
-      test_loss = model.evaluate(X_test, test_targets)
-      print >>sys.stderr, "Test loss: %.4f"%test_loss 
     concept_reps = model.layers[1].get_weights()
     self.model = model
     return concept_reps
+
+  def test(self, vocab_size, use_onto_lstm, S_ind_test=None, C_ind_test=None, hierarchical=False, base=2):
+    X_test = C_ind_test[:,:-1] if use_onto_lstm else S_ind_test[:,:-1] # remove the last words' hyps in all sentences
+    Y_inds_test = S_ind_test[:,1:]
+    if hierarchical:
+      test_targets = self._factor_target_indices(Y_inds_test, vocab_size, base=base)
+    else:
+      test_targets = [self._make_one_hot(Y_inds_test, vocab_size)]
+    print >>sys.stderr, "Evaluating model on test data"
+    test_loss = self.model.evaluate(X_test, test_targets)
+    print >>sys.stderr, "Test loss: %.4f"%test_loss 
 
   def get_attention(self, C_ind):
     if not self.model:
@@ -171,7 +168,7 @@ class SentenceModel(object):
 
 if __name__ == '__main__':
   argparser = argparse.ArgumentParser(description="Model sentences using ontoLSTM")
-  argparser.add_argument('train_file', metavar='TRAIN-FILE', type=str, help="One sentence per line, POS tagged")
+  argparser.add_argument('--train_file', type=str, help="One sentence per line, POS tagged")
   argparser.add_argument('--test_file', type=str, help="Test file for which attention values will be printed. One sentence per line, POS tagged")
   argparser.add_argument('--dim', type=int, help="Word/synset dimensionality", default=50)
   argparser.add_argument('--num_senses', type=int, help="Number of senses per word if using OntoLSTM (default 2)", default=2)
@@ -183,25 +180,46 @@ if __name__ == '__main__':
   argparser.add_argument('--synset_embedding_output', type=str, help="Print learned synset representations in the given file")
   argparser.add_argument('--num_epochs', type=int, help="Number of epochs (default 20)", default=20)
   args = argparser.parse_args()
-  sm = SentenceModel(word_dim=args.dim, num_senses=args.num_senses, num_hyps=args.num_hyps)
-  ts = [x.strip() for x in codecs.open(args.train_file, "r", "utf-8").readlines()]
   if args.show_attention and (not args.use_attention or not args.use_onto_lstm):
     raise RuntimeError, "Use OntoLSTM with attention to print attention values of the test file"
-  print >>sys.stderr, "Reading training data"
-  S_ind, C_ind = sm.read_sentences(ts)
-  _, train_sent_len, _, _ = C_ind.shape
+  sm = SentenceModel(word_dim=args.dim, num_senses=args.num_senses, num_hyps=args.num_hyps)
   hierarchical = False
   base = 2
   if args.hierarchical is not None:
     hierarchical = True
     base = args.hierarchical 
+  model_name_prefix = "sent_model_ontolstm=%s_att=%s_senses=%d_hyps=%d"%(str(args.use_onto_lstm), str(args.use_attention), args.num_senses, args.num_hyps)
+  do_train = False
+  do_test = False
+  if args.train_file is not None:
+    do_train = True
+    ts = [x.strip() for x in codecs.open(args.train_file, "r", "utf-8").readlines()]
+    print >>sys.stderr, "Reading training data"
+    S_ind, C_ind = sm.read_sentences(ts)
+    _, train_sent_len, _, _ = C_ind.shape
+    concept_reps = sm.train(S_ind, C_ind, use_onto_lstm=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs, hierarchical=hierarchical, base=base)
+    model_yaml_string = sm.model.to_yaml()
+    open("%s.yaml"%model_name_prefix, "w").write(model_yaml_string)
+    sm.model.save_weights("%s.h5"%model_name_prefix, overwrite=True)
+    dataproc_pkl_file = open("%s_dataproc.pkl"%model_name_prefix, "w")
+    pickle.dump(sm.dp, dataproc_pkl_file)
+  else:
+    print >>sys.stderr, "Loading stored model"
+    sm.model = model_from_yaml(open("%s.yaml"%model_name_prefix).read(), custom_objects={"HigherOrderEmbedding": HigherOrderEmbedding, "OntoAttentionLSTM": OntoAttentionLSTM})
+    print >>sys.stderr, sm.model.summary()
+    sm.model.load_weights("%s.h5"%model_name_prefix)
+    sm.model.compile(optimizer='adam', loss='categorical_crossentropy')
+    dataproc_pkl_file = open("%s_dataproc.pkl"%model_name_prefix)
+    sm.dp = pickle.load(dataproc_pkl_file)
+    print sm.model.get_input_shape_at(0)
+    train_sent_len = sm.model.get_input_shape_at(0)[1] + 1 #because the input shape will be one less than the sentence length
+    
   if args.test_file is not None:
     print >>sys.stderr, "Reading test data"
     ts_test = [x.strip() for x in codecs.open(args.test_file, "r", "utf-8").readlines()]
-    S_ind_test, C_ind_test = sm.read_sentences(ts_test, sentlenlimit=train_sent_len)
-    concept_reps = sm.train(S_ind, C_ind, use_onto_lstm=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs, S_ind_test=S_ind_test, C_ind_test=C_ind_test, hierarchical=hierarchical, base=base)
-  else:
-    concept_reps = sm.train(S_ind, C_ind, use_onto_lstm=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs, hierarchical=hierarchical, base=base)
+    S_ind_test, C_ind_test = sm.read_sentences(ts_test, sentlenlimit=train_sent_len, test=True)
+    vocab_size = len(sm.dp.word_index)
+    sm.test(vocab_size, args.use_onto_lstm, S_ind_test, C_ind_test, hierarchical, base)
   if args.synset_embedding_output is not None:
     concrepfile = open(args.synset_embedding_output, "w")
     for syn in sm.dp.synset_index:

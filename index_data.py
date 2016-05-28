@@ -12,8 +12,8 @@ class DataProcessor(object):
     self.people_prons = ['they', 'them', 'themselves', 'we', 'ourselves', 'yourselves'] # people.n.01, people.n.03
     self.person_prons = ['you', 'i', 'who', 'whom', 'whoever', 'anyone', 'everyone', 'myself', 'yourself'] # person.n.01
     self.word_hypernym_map = {}
-    self.word_index = {"NONE": 0}
-    self.synset_index = {"NONE": 0}
+    self.word_index = {"NONE": 0, "UNK": 1}
+    self.synset_index = {"NONE": 0, "UNK": 1}
     
   def get_hypernyms_syn(self, syn, path_cutoff=None):
     if not path_cutoff:
@@ -60,7 +60,7 @@ class DataProcessor(object):
         hypernyms = [[word]]
     return hypernyms
 
-  def index_sentence(self, words, pos_tags):
+  def index_sentence(self, words, pos_tags, test=False):
     word_inds = []
     conc_inds = []
     for word, pos_tag in zip(words, pos_tags):
@@ -76,7 +76,7 @@ class DataProcessor(object):
       else:
         wn_pos = None
       word_conc_inds = []
-      if word not in self.word_index:
+      if word not in self.word_index and not test:
         self.word_index[word] = len(self.word_index)
       if (word, wn_pos) in self.word_hypernym_map:
         word_hyps = self.word_hypernym_map[(word, wn_pos)]
@@ -87,10 +87,12 @@ class DataProcessor(object):
         word_sense_conc_inds = []
         # Most specific concept will be at the end
         for syn in reversed(sense_syns):
-          if syn not in self.synset_index:
+          if syn not in self.synset_index and not test:
             self.synset_index[syn] = len(self.synset_index)
-          word_sense_conc_inds.append(self.synset_index[syn])
+          conc_ind = self.synset_index[syn] if syn in self.synset_index else self.synset_index['UNK']
+          word_sense_conc_inds.append(conc_ind)
         word_conc_inds.append(word_sense_conc_inds)
-      word_inds.append(self.word_index[word])
+      word_ind = self.word_index[word] if word in self.word_index else self.word_index['UNK']
+      word_inds.append(word_ind)
       conc_inds.append(word_conc_inds)
     return word_inds, conc_inds

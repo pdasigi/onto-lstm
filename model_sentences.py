@@ -138,7 +138,20 @@ class SentenceModel(object):
       test_targets = [self._make_one_hot(Y_inds_test, vocab_size)]
     print >>sys.stderr, "Evaluating model on test data"
     test_loss = self.model.evaluate(X_test, test_targets)
-    print >>sys.stderr, "Test loss: %.4f"%test_loss 
+    print >>sys.stderr, "Test loss: %.4f"%test_loss
+    factored_test_preds = [(pred * target).sum(axis=-1) for pred, target in zip(self.model.predict(X_test), test_targets)]
+    test_preds = numpy.ones_like(factored_test_preds[0])
+    for ftp in factored_test_preds:
+      test_preds = numpy.copy(test_preds * ftp)
+    #print [tp.shape for tp in test_preds]
+    non_null_probs = []
+    for test_pred, inds in zip(test_preds, Y_inds_test):
+      wanted_probs = []
+      for tp, ind in zip(test_pred, inds):
+        if ind != 0:
+          wanted_probs.append(numpy.log(tp))
+      non_null_probs.append(wanted_probs)
+    return non_null_probs
 
   def get_attention(self, C_ind):
     if not self.model:
@@ -219,7 +232,11 @@ if __name__ == '__main__':
     ts_test = [x.strip() for x in codecs.open(args.test_file, "r", "utf-8").readlines()]
     S_ind_test, C_ind_test = sm.read_sentences(ts_test, sentlenlimit=train_sent_len, test=True)
     vocab_size = len(sm.dp.word_index)
-    sm.test(vocab_size, args.use_onto_lstm, S_ind_test, C_ind_test, hierarchical, base)
+    test_probs = sm.test(vocab_size, args.use_onto_lstm, S_ind_test, C_ind_test, hierarchical, base)
+    outfile = open("%s.out"%model_name_prefix, "w")
+    for nnp in test_probs:
+      print >>outfile, " ".join(["%.4f"%p for p in nnp])
+    outfile.close()
   if args.synset_embedding_output is not None:
     concrepfile = open(args.synset_embedding_output, "w")
     for syn in sm.dp.synset_index:

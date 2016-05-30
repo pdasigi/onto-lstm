@@ -202,20 +202,15 @@ if __name__ == '__main__':
     hierarchical = True
     base = args.hierarchical 
   model_name_prefix = "sent_model_ontolstm=%s_att=%s_senses=%d_hyps=%d"%(str(args.use_onto_lstm), str(args.use_attention), args.num_senses, args.num_hyps)
-  do_train = False
   do_test = False
+  do_train = False
+
   if args.train_file is not None:
-    do_train = True
     ts = [x.strip() for x in codecs.open(args.train_file, "r", "utf-8").readlines()]
     print >>sys.stderr, "Reading training data"
     S_ind, C_ind = sm.read_sentences(ts)
     _, train_sent_len, _, _ = C_ind.shape
-    concept_reps = sm.train(S_ind, C_ind, use_onto_lstm=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs, hierarchical=hierarchical, base=base)
-    model_yaml_string = sm.model.to_yaml()
-    open("%s.yaml"%model_name_prefix, "w").write(model_yaml_string)
-    sm.model.save_weights("%s.h5"%model_name_prefix, overwrite=True)
-    dataproc_pkl_file = open("%s_dataproc.pkl"%model_name_prefix, "w")
-    pickle.dump(sm.dp, dataproc_pkl_file)
+    do_train = True
   else:
     print >>sys.stderr, "Loading stored model"
     sm.model = model_from_yaml(open("%s.yaml"%model_name_prefix).read(), custom_objects={"HigherOrderEmbedding": HigherOrderEmbedding, "OntoAttentionLSTM": OntoAttentionLSTM})
@@ -226,11 +221,23 @@ if __name__ == '__main__':
     sm.dp = pickle.load(dataproc_pkl_file)
     print sm.model.get_input_shape_at(0)
     train_sent_len = sm.model.get_input_shape_at(0)[1] + 1 #because the input shape will be one less than the sentence length
-    
+
   if args.test_file is not None:
     print >>sys.stderr, "Reading test data"
     ts_test = [x.strip() for x in codecs.open(args.test_file, "r", "utf-8").readlines()]
-    S_ind_test, C_ind_test = sm.read_sentences(ts_test, sentlenlimit=train_sent_len, test=True)
+    lock_index = False if do_train else True
+    S_ind_test, C_ind_test = sm.read_sentences(ts_test, sentlenlimit=train_sent_len, test=lock_index)
+    do_test = True
+
+  if do_train:
+    concept_reps = sm.train(S_ind, C_ind, use_onto_lstm=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs, hierarchical=hierarchical, base=base)
+    model_yaml_string = sm.model.to_yaml()
+    open("%s.yaml"%model_name_prefix, "w").write(model_yaml_string)
+    sm.model.save_weights("%s.h5"%model_name_prefix, overwrite=True)
+    dataproc_pkl_file = open("%s_dataproc.pkl"%model_name_prefix, "w")
+    pickle.dump(sm.dp, dataproc_pkl_file)
+    
+  if do_test:
     vocab_size = len(sm.dp.word_index)
     test_probs = sm.test(vocab_size, args.use_onto_lstm, S_ind_test, C_ind_test, hierarchical, base)
     outfile = open("%s.out"%model_name_prefix, "w")

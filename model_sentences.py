@@ -70,7 +70,7 @@ class SentenceModel(object):
 
   def _factor_target_indices(self, Y_inds, vocab_size=None, base=2):
     if vocab_size is None:
-      vocab_size = Y_inds.max() + 1
+      vocab_size = len(self.dp.word_index)
     print >>sys.stderr, "Factoring targets of vocabulary size: %d"%(vocab_size)
     num_vecs = int(math.ceil(math.log(vocab_size)/math.log(base))) + 1
     base_inds = []

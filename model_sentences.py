@@ -139,17 +139,18 @@ class SentenceModel(object):
     print >>sys.stderr, "Evaluating model on test data"
     test_loss = self.model.evaluate(X_test, test_targets)
     print >>sys.stderr, "Test loss: %.4f"%test_loss
-    factored_test_preds = [(pred * target).sum(axis=-1) for pred, target in zip(self.model.predict(X_test), test_targets)]
-    test_preds = numpy.ones_like(factored_test_preds[0])
-    for ftp in factored_test_preds:
-      test_preds = numpy.copy(test_preds * ftp)
+    factored_test_preds = [-((numpy.log(pred) * target).sum(axis=-1)) for pred, target in zip(self.model.predict(X_test), test_targets)]
+    #test_preds = numpy.zeros_like(factored_test_preds[0])
+    #for ftp in factored_test_preds:
+    #  test_preds = numpy.copy(test_preds + ftp)
+    test_preds = sum(factored_test_preds)
     #print [tp.shape for tp in test_preds]
     non_null_probs = []
     for test_pred, inds in zip(test_preds, Y_inds_test):
       wanted_probs = []
       for tp, ind in zip(test_pred, inds):
         if ind != 0:
-          wanted_probs.append(numpy.log(tp))
+          wanted_probs.append(tp)
       non_null_probs.append(wanted_probs)
     return non_null_probs
 

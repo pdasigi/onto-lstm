@@ -129,7 +129,7 @@ class SentenceModel(object):
     self.model = model
     return concept_reps
 
-  def test(self, vocab_size, use_onto_lstm, S_ind_test=None, C_ind_test=None, hierarchical=False, base=2):
+  def test(self, vocab_size, use_onto_lstm, S_ind_test=None, C_ind_test=None, hierarchical=False, base=2, oov_list=None):
     X_test = C_ind_test[:,:-1] if use_onto_lstm else S_ind_test[:,:-1] # remove the last words' hyps in all sentences
     Y_inds_test = S_ind_test[:,1:]
     if hierarchical:
@@ -139,20 +139,25 @@ class SentenceModel(object):
     print >>sys.stderr, "Evaluating model on test data"
     test_loss = self.model.evaluate(X_test, test_targets)
     print >>sys.stderr, "Test loss: %.4f"%test_loss
+    if oov_list is not None:
+      oov_inds = [self.dp.word_index[w] for w in oov_list]
+      non_oov_Y_inds = numpy.copy(Y_inds_test)
+      for ind in oov_inds:
+	non_oov_Y_inds[non_oov_Y_inds == ind] = 0
+      non_oov_test_targets = self._factor_target_indices(non_oov_Y_inds, vocab_size, base=base)
+      non_oov_test_loss = self.model.evaluate(X_test, non_oov_test_targets)
+      print >>sys.stderr, "Non-oov test loss: %.4f"%non_oov_test_loss
     factored_test_preds = [-((numpy.log(pred) * target).sum(axis=-1)) for pred, target in zip(self.model.predict(X_test), test_targets)]
-    #test_preds = numpy.zeros_like(factored_test_preds[0])
-    #for ftp in factored_test_preds:
-    #  test_preds = numpy.copy(test_preds + ftp)
     test_preds = sum(factored_test_preds)
-    #print [tp.shape for tp in test_preds]
-    non_null_probs = []
-    for test_pred, inds in zip(test_preds, Y_inds_test):
-      wanted_probs = []
-      for tp, ind in zip(test_pred, inds):
-        if ind != 0:
-          wanted_probs.append(tp)
-      non_null_probs.append(wanted_probs)
-    return non_null_probs
+    #non_null_probs = []
+    #for test_pred, inds in zip(test_preds, Y_inds_test):
+    #  wanted_probs = []
+    #  for tp, ind in zip(test_pred, inds):
+    #    if ind != 0:
+    #      wanted_probs.append(tp)
+    #  non_null_probs.append(wanted_probs)
+    #return non_null_probs
+    return test_preds
 
   def get_attention(self, C_ind):
     if not self.model:
@@ -210,6 +215,7 @@ if __name__ == '__main__':
     ts = [x.strip() for x in codecs.open(args.train_file, "r", "utf-8").readlines()]
     print >>sys.stderr, "Reading training data"
     S_ind, C_ind = sm.read_sentences(ts)
+    print >>sys.stderr, "Target vocab size after reading training data: %d"%(len(sm.dp.word_index))
     _, train_sent_len, _, _ = C_ind.shape
     do_train = True
   else:
@@ -220,14 +226,17 @@ if __name__ == '__main__':
     sm.model.compile(optimizer='adam', loss='categorical_crossentropy')
     dataproc_pkl_file = open("%s_dataproc.pkl"%model_name_prefix)
     sm.dp = pickle.load(dataproc_pkl_file)
+    print >>sys.stderr, "Target vocab size of loaded index: %d"%(len(sm.dp.word_index))
     print sm.model.get_input_shape_at(0)
     train_sent_len = sm.model.get_input_shape_at(0)[1] + 1 #because the input shape will be one less than the sentence length
 
   if args.test_file is not None:
     print >>sys.stderr, "Reading test data"
     ts_test = [x.strip() for x in codecs.open(args.test_file, "r", "utf-8").readlines()]
-    lock_index = False if do_train else True
+    #lock_index = False if do_train else True
+    lock_index = True
     S_ind_test, C_ind_test = sm.read_sentences(ts_test, sentlenlimit=train_sent_len, test=lock_index)
+    print >>sys.stderr, "Target vocab size after reading test data: %d"%(len(sm.dp.word_index))
     do_test = True
 
   if do_train:

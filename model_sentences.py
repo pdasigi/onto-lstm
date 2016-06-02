@@ -24,7 +24,7 @@ class SentenceModel(object):
     self.word_dim = word_dim
     self.model = None
 
-  def read_sentences(self, tagged_sentences, sentlenlimit=None, test=False):
+  def read_sentences(self, tagged_sentences, sentlenlimit=None, test=False, remove_singletons=False):
     num_sentences = len(tagged_sentences)
     all_words = []
     all_pos_tags = []
@@ -53,7 +53,7 @@ class SentenceModel(object):
     for i, (words, pos_tags) in enumerate(zip(all_words, all_pos_tags)):
       sentlen = len(words)
       # test=True locks the word and syn index dicts. No new keys will be added
-      word_inds, syn_inds = self.dp.index_sentence(words, pos_tags, test=test)
+      word_inds, syn_inds = self.dp.index_sentence(words, pos_tags, test=test, remove_singletons=remove_singletons)
       S_ind[i][-sentlen:] = word_inds
       for j in range(sentlen):
         sense_syn_ind = syn_inds[j]
@@ -214,8 +214,13 @@ if __name__ == '__main__':
   if args.train_file is not None:
     ts = [x.strip() for x in codecs.open(args.train_file, "r", "utf-8").readlines()]
     print >>sys.stderr, "Reading training data"
-    S_ind, C_ind = sm.read_sentences(ts)
+    S_ind, C_ind = sm.read_sentences(ts, remove_singletons=True)
     print >>sys.stderr, "Target vocab size after reading training data: %d"%(len(sm.dp.word_index))
+    singletons = []
+    for w, n in sm.dp.word_index.items():
+      if n == 1:
+        singletons.append(w)
+    print >>sys.stderr, "Number of singletons: %d. Here are some:"%(len(singletons)), singletons[:5]
     _, train_sent_len, _, _ = C_ind.shape
     do_train = True
   else:

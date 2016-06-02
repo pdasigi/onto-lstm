@@ -14,6 +14,10 @@ class DataProcessor(object):
     self.word_hypernym_map = {}
     self.word_index = {"NONE": 0, "UNK": 1}
     self.synset_index = {"NONE": 0, "UNK": 1}
+    self.word_singletons = set([])
+    self.word_non_singletons = set([])
+    self.conc_singletons = set([])
+    self.conc_non_singletons = set([])
     
   def get_hypernyms_syn(self, syn, path_cutoff=None):
     if not path_cutoff:
@@ -60,11 +64,11 @@ class DataProcessor(object):
         hypernyms = [[word]]
     return hypernyms
 
-  def index_sentence(self, words, pos_tags, test=False):
+  def index_sentence(self, words, pos_tags, test=False, remove_singletons=False):
     word_inds = []
     conc_inds = []
-    for word, pos_tag in zip(words, pos_tags):
-      word = word.lower()
+    wn_pos_tags = []
+    for pos_tag in pos_tags:
       if pos_tag.startswith("J"):
         wn_pos = "a"
       elif pos_tag.startswith("V"):
@@ -75,20 +79,46 @@ class DataProcessor(object):
         wn_pos = "r"
       else:
         wn_pos = None
-      word_conc_inds = []
-      if word not in self.word_index and not test:
-        self.word_index[word] = len(self.word_index)
+      wn_pos_tags.append(wn_pos)
+    for word, wn_pos in zip(words, wn_pos_tags):
+      word = word.lower()
       if (word, wn_pos) in self.word_hypernym_map:
         word_hyps = self.word_hypernym_map[(word, wn_pos)]
       else:
         word_hyps = self.get_hypernyms_word(word, wn_pos)
         self.word_hypernym_map[(word, wn_pos)] = word_hyps
+      # Add to singletons or non-singletons
+      if word not in self.word_non_singletons:
+        if word in self.word_singletons:
+          self.word_singletons.remove(word)
+          self.word_non_singletons.add(word)
+        else:
+          self.word_singletons.add(word)
+      for sense_syns in word_hyps:
+        for syn in sense_syns:
+          if syn not in self.conc_non_singletons:
+            if syn in self.conc_singletons:
+              self.conc_singletons.remove(syn)
+              self.conc_non_singletons.add(syn)
+            else:
+              self.conc_singletons.add(syn)
+    for word, wn_pos in zip(words, wn_pos_tags):
+      word_conc_inds = []
+      if word not in self.word_index and not test:
+        if remove_singletons and word in self.word_singletons:
+          self.word_index[word] = self.word_index['UNK']
+        else:
+          self.word_index[word] = len(self.word_index)
+      word_hyps = self.word_hypernym_map[(word, wn_pos)]
       for sense_syns in word_hyps:
         word_sense_conc_inds = []
         # Most specific concept will be at the end
         for syn in reversed(sense_syns):
           if syn not in self.synset_index and not test:
-            self.synset_index[syn] = len(self.synset_index)
+            if remove_singletons and syn in self.conc_singletons:
+              self.synset_index[syn] = self.synset_index['UNK']
+            else:
+              self.synset_index[syn] = len(self.synset_index)
           conc_ind = self.synset_index[syn] if syn in self.synset_index else self.synset_index['UNK']
           word_sense_conc_inds.append(conc_ind)
         word_conc_inds.append(word_sense_conc_inds)

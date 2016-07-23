@@ -1,98 +1,42 @@
-from keras.layers import Recurrent
+from keras.layers import LSTM
 from keras.engine import InputSpec
-from keras import activations, initializations, regularizers
+from keras import regularizers
 from keras import backend as K
 from keras_extensions import rnn
 
-class OntoAttentionLSTM(Recurrent):
+class OntoAttentionLSTM(LSTM):
     '''
     Modification of LSTM implementation in Keras to take a hierarchy as input (matrix instead of a vector at each time step), and take a weighted average of it using attention mechanism.
     '''
     input_ndim = 5
     
     def __init__(self, output_dim,
-                 init='glorot_uniform', inner_init='orthogonal',
-                 forget_bias_init='one', activation='tanh',
-                 inner_activation='hard_sigmoid', 
-                 W_regularizer=None, U_regularizer=None, b_regularizer=None,
-                 weights=None, return_sequences=False, go_backwards=False, stateful=False,
-                 unroll=None, consume_less='cpu',
-                 input_dim=None, num_senses=None, num_hyps=None, input_length=None, use_attention=False, 
+                 num_senses, num_hyps, use_attention=False, 
                  return_attention=False, **kwargs):
-        self.output_dim = output_dim
-        self.init = initializations.get(init)
-        self.inner_init = initializations.get(inner_init)
-        self.forget_bias_init = initializations.get(forget_bias_init)
-        self.activation = activations.get(activation)
-        self.inner_activation = activations.get(inner_activation)
-        self.W_regularizer = regularizers.get(W_regularizer)
-        self.U_regularizer = regularizers.get(U_regularizer)
-        self.b_regularizer = regularizers.get(b_regularizer)
-        # Initializations from Recurrent to avoid calling its constructor.
-        self.return_sequences = return_sequences
-        self.go_backwards = go_backwards
-        self.stateful = stateful
-        self.unroll = unroll
-        self.consume_less = consume_less
-
-        self.supports_masking = True
-        self.input_dim = input_dim
+        # Set output_dim in kwargs so that we can pass it along to LSTM's init
+        kwargs['output_dim'] = output_dim
         self.num_senses = num_senses
         self.num_hyps = num_hyps
-        self.input_length = input_length
         self.use_attention = use_attention
         self.return_attention = return_attention
-        self.initial_weights = weights
-        if self.input_dim:
-            kwargs['input_shape'] = (self.input_length, self.num_senses, self.num_hyps, self.input_dim)
-        super(Recurrent, self).__init__(**kwargs)
+        super(OntoAttentionLSTM, self).__init__(**kwargs)
+        # Recurrent would have set the input shape to cause the input dim to 3. Change it.
+        self.input_spec = [InputSpec(ndim=5)]
 
     def build(self, input_shape):
         self.input_spec = [InputSpec(shape=input_shape)]
         input_dim = input_shape[4]
         self.input_dim = input_dim
-
-        if self.stateful:
-            self.reset_states()
-        else:
-            # initial states: 2 all-zero tensors of shape (output_dim)
-            self.states = [None, None]
-
-        self.W_i = self.init((input_dim, self.output_dim), name='{}_W_i'.format(self.name))
-        self.U_i = self.inner_init((self.output_dim, self.output_dim), name='{}_U_i'.format(self.name))
-        self.b_i = K.zeros((self.output_dim,), name='{}_b_i'.format(self.name))
-
-        self.W_f = self.init((input_dim, self.output_dim), name='{}_W_f'.format(self.name))
-        self.U_f = self.inner_init((self.output_dim, self.output_dim), name='{}_U_f'.format(self.name))
-        self.b_f = self.forget_bias_init((self.output_dim,), name='{}_b_f'.format(self.name))
-
-        self.W_c = self.init((input_dim, self.output_dim), name='{}_W_c'.format(self.name))
-        self.U_c = self.inner_init((self.output_dim, self.output_dim), name='{}_U_c'.format(self.name))
-        self.b_c = K.zeros((self.output_dim,), name='{}_b_c'.format(self.name))
-
-        self.W_o = self.init((input_dim, self.output_dim), name='{}_W_o'.format(self.name))
-        self.U_o = self.inner_init((self.output_dim, self.output_dim), name='{}_U_o'.format(self.name))
-        self.b_o = K.zeros((self.output_dim,), name='{}_b_o'.format(self.name))
-
-        if self.W_regularizer:
-            self.W_regularizer.set_param(K.concatenate([self.W_i,
-                                                        self.W_f,
-                                                        self.W_c,
-                                                        self.W_o]))
-            self.regularizers.append(self.W_regularizer)
-        if self.U_regularizer:
-            self.U_regularizer.set_param(K.concatenate([self.U_i,
-                                                        self.U_f,
-                                                        self.U_c,
-                                                        self.U_o]))
-            self.regularizers.append(self.U_regularizer)
-        if self.b_regularizer:
-            self.b_regularizer.set_param(K.concatenate([self.b_i,
-                                                        self.b_f,
-                                                        self.b_c,
-                                                        self.b_o]))
-            self.regularizers.append(self.b_regularizer)
-
+        # Saving onto-lstm weights to set them later. This way, LSTM's build method won't 
+        # delete them.
+        self.initial_ontolstm_weights = self.initial_weights
+        self.initial_weights = None
+        lstm_input_shape = input_shape[:2] + (input_shape[4],) # removing senses and hyps
+        # Now calling LSTM's build to initialize the LSTM weights
+        super(OntoAttentionLSTM, self).build(lstm_input_shape)
+        # This would have changed the input shape and ndim. Reset it again.
+        self.input_spec = [InputSpec(shape=input_shape)]
+        
         self.trainable_weights = [self.W_i, self.U_i, self.b_i,
                                   self.W_c, self.U_c, self.b_c,
                                   self.W_f, self.U_f, self.b_f,
@@ -101,21 +45,26 @@ class OntoAttentionLSTM(Recurrent):
         if self.use_attention:
             # Following are the attention parameters
             # Sense projection and scoring
-            self.P_sense_syn_att = self.inner_init((input_dim, self.output_dim), name='{}_P_sense_syn_att'.format(self.name)) # Projection operator for synsets
-            self.P_sense_cont_att = self.inner_init((self.output_dim, self.output_dim), name='{}_P_sense_cont_att'.format(self.name)) # Projection operator for hidden state (context)
+            self.P_sense_syn_att = self.inner_init((input_dim, self.output_dim), 
+                name='{}_P_sense_syn_att'.format(self.name)) # Projection operator for synsets
+            self.P_sense_cont_att = self.inner_init((self.output_dim, self.output_dim),
+                name='{}_P_sense_cont_att'.format(self.name)) # Projection operator for hidden state (context)
             self.s_sense_att = self.init((self.output_dim,), name='{}_s_senses_att'.format(self.name))
 
             # Generalization projection and scoring
-            self.P_gen_syn_att = self.inner_init((input_dim, self.output_dim), name='{}_P_sense_gen_att'.format(self.name)) # Projection operator for synsets
-            self.P_gen_cont_att = self.inner_init((self.output_dim, self.output_dim), name='{}_P_gen_cont_att'.format(self.name)) # Projection operator for hidden state (context)
+            self.P_gen_syn_att = self.inner_init((input_dim, self.output_dim),
+                name='{}_P_sense_gen_att'.format(self.name)) # Projection operator for synsets
+            self.P_gen_cont_att = self.inner_init((self.output_dim, self.output_dim),
+                name='{}_P_gen_cont_att'.format(self.name)) # Projection operator for hidden state (context)
             self.s_gen_att = self.init((self.output_dim,), name='{}_s_gen_att'.format(self.name))
 
+            # LSTM's build method would have initialized trainable_weights. Add to it.
             self.trainable_weights.extend([self.P_sense_syn_att, self.P_sense_cont_att, self.s_sense_att,
                                            self.P_gen_syn_att, self.P_gen_cont_att, self.s_gen_att])
 
-        if self.initial_weights is not None:
-            self.set_weights(self.initial_weights)
-            #del self.initial_weights
+        if self.initial_ontolstm_weights is not None:
+            self.set_weights(self.initial_ontolstm_weights)
+            del self.initial_ontolstm_weights
 
     # Reimplementing because ndim of X is 5
     def get_initial_states(self, X):
@@ -127,25 +76,8 @@ class OntoAttentionLSTM(Recurrent):
         initial_states = [initial_state, initial_state]
         return initial_states
 
-    def reset_states(self):
-        assert self.stateful, 'Layer must be stateful.'
-        input_shape = self.input_shape
-        if not input_shape[0]:
-            raise Exception('If a RNN is stateful, a complete ' +
-                            'input_shape must be provided ' +
-                            '(including batch size).')
-        if hasattr(self, 'states'):
-            K.set_value(self.states[0],
-                        np.zeros((input_shape[0], self.output_dim)))
-            K.set_value(self.states[1],
-                        np.zeros((input_shape[0], self.output_dim)))
-        else:
-            self.states = [K.zeros((input_shape[0], self.output_dim)),
-                           K.zeros((input_shape[0], self.output_dim))]
-
     # There are two step functions, one for output and another for attention below. Both call this function.
     def _step(self, x_cs, states):
-        #assert len(states) == 3
         assert len(states) == 2
  
         h_tm1 = states[0]
@@ -155,10 +87,9 @@ class OntoAttentionLSTM(Recurrent):
 
         # Before the step function is called, the original input is dimshuffled to have (time, samples, senses, hyps, concept_dim)
         # So shape of x_cs is (samples, senses, hyps, concept_dim)
+        # TODO: Better definition of attention, and attention weight regularization
         if self.use_attention:
             # Sense attention
-            # Consider only the lowest (most specific) synset in each sense to determine sense attention
-            #s_syn_proj = K.T.tensordot(x_cs[:, :, -1, :].dimshuffle(1,0,2), self.P_sense_syn_att, axes=(2,0)) # (senses, samples, proj_dim)
             # Consider an average of all syns in each sense
             s_syn_proj = K.T.tensordot(x_cs.mean(axis=2).dimshuffle(1,0,2), self.P_sense_syn_att, axes=(2,0)) # (senses, samples, proj_dim)
             s_cont_proj = K.dot(h_tm1, self.P_sense_cont_att) # (samples, proj_dim)
@@ -204,7 +135,9 @@ class OntoAttentionLSTM(Recurrent):
 
     def get_constants(self, x):
         return []
-
+    
+    # redefining compute mask because the input ndim is different from the output ndim, and 
+    # this needs to be handled.
     def compute_mask(self, input, mask):
         if self.return_sequences:
             # Get rid of syn and hyp dimensions for computing loss
@@ -212,6 +145,7 @@ class OntoAttentionLSTM(Recurrent):
         else:
             return None
 
+    # Redefining call because we may want to return attention values instead of the actual output.
     def call(self, x, mask=None):
         # input shape: (nb_samples, time (padded with zeros), num_senses, num_hyps, input_dim)
         input_shape = self.input_spec[0].shape

@@ -20,99 +20,9 @@ class EntailmentModel(object):
         self.word_rep = {}
         self.word_dim = None
         # TODO: Move the pretrained word embedding business to DataProcessor
-        self.word_rep_max = -1.0
-        self.word_rep_min = 1.0
-        if embed_file is not None:
-            self.word_rep_max = -float("inf")
-            self.word_rep_min = float("inf")
-            for line in gzip.open(embed_file):
-                ln_parts = line.strip().split()
-                if len(ln_parts) == 2:
-                    continue
-                word = ln_parts[0]
-                vec = numpy.asarray([float(f) for f in ln_parts[1:]])
-                vec_max, vec_min = vec.max(), vec.min()
-                if vec_max > self.word_rep_max:
-                    self.word_rep_max = vec_max
-                if vec_min < self.word_rep_min:
-                    self.word_rep_min = vec_min
-                self.word_rep[word] = vec
-            self.word_dim = len(vec)
-        if self.word_dim is None:
+        if self.word_dim is not None and embed_file is None:
             self.word_dim = word_dim
-        else:
-            if self.word_dim != word_dim:
-                print >>sys.stderr, "Warning: Embedding file has vectors of dimensionality: %d. Ignoring provided word_dim setting."%(self.word_dim)
         self.model = None
-
-    # TODO: Move sentence processing to DataProcessor (will be used for other entsilment experiments)
-    # TODO: Define a sentence processor function that processes sentences, returns word indices, concept indices, word vectors or concept vectors. Call that for each of hyp and premise.
-
-    def read_sentences(self, tagged_sentences, sentlenlimit=None):
-        num_sentences = len(tagged_sentences)
-        all_words = []
-        all_pos_tags = []
-        maxsentlen = 0
-        for tagged_sentence in tagged_sentences:
-            sent1_words = []
-            sent1_pos_tags = []
-            sent2_words = []
-            sent2_pos_tags = []
-            in_first_sent = True
-            # Expects each token to be a "_" separated combination of word and POS tag.
-            for word_tag in tagged_sentence.split(" "):
-                if word_tag == "|||":
-                    in_first_sent = False
-                    continue
-                else:
-                    word, tag = word_tag.split("_")
-                word = word.lower()
-                if in_first_sent:
-                    sent1_words.append(word)
-                    sent1_pos_tags.append(tag)
-                else:
-                    sent2_words.append(word)
-                    sent2_pos_tags.append(tag)
-            if len(sent1_words) > maxsentlen:
-                maxsentlen = len(sent1_words)
-            if len(sent2_words) > maxsentlen:
-                maxsentlen = len(sent2_words)
-            all_words.append((sent1_words, sent2_words))
-            all_pos_tags.append((sent1_pos_tags, sent2_pos_tags))
-        if not sentlenlimit:
-            sentlenlimit = maxsentlen
-        C1_ind = numpy.zeros((num_sentences, sentlenlimit, self.num_senses, self.num_hyps), dtype='int32')
-        S1_ind = numpy.zeros((num_sentences, sentlenlimit), dtype='int32')
-        C2_ind = numpy.zeros((num_sentences, sentlenlimit, self.num_senses, self.num_hyps), dtype='int32')
-        S2_ind = numpy.zeros((num_sentences, sentlenlimit), dtype='int32')
-        S1 = numpy.zeros((num_sentences, sentlenlimit, self.word_dim))
-        S2 = numpy.zeros((num_sentences, sentlenlimit, self.word_dim))
-        for i, ((sent1_words, sent2_words), (sent1_pos_tags, sent2_pos_tags)) in enumerate(zip(all_words, all_pos_tags)):
-            for word in sent1_words + sent2_words:
-                if word not in self.word_rep:
-                    rand_rep = self.numpy_rng.uniform(low=self.word_rep_min, high=self.word_rep_max, size=(self.word_dim))
-                    self.word_rep[word] = rand_rep
-            # Sentence 1 processing
-            sent1len = len(sent1_words)
-            sent1_word_inds, sent1_syn_inds = self.dp.index_sentence(sent1_words, sent1_pos_tags)
-            S1_ind[i][-sent1len:] = sent1_word_inds
-            for j in range(sent1len):
-                S1[i][-sent1len+j] = self.word_rep[sent1_words[j]]
-                sense_syn_ind = sent1_syn_inds[j]
-                sense_syn_ind_len = len(sense_syn_ind)
-                for k, syn_ind in enumerate(sense_syn_ind):
-                    C1_ind[i][-sent1len+j][-sense_syn_ind_len+k][-len(syn_ind):] = syn_ind
-            # Sentence 2 processing
-            sent2len = len(sent2_words)
-            sent2_word_inds, sent2_syn_inds = self.dp.index_sentence(sent2_words, sent2_pos_tags)
-            S2_ind[i][-sent2len:] = sent2_word_inds
-            for j in range(sent2len):
-                S2[i][-sent2len+j] = self.word_rep[sent2_words[j]]
-                sense_syn_ind = sent2_syn_inds[j]
-                sense_syn_ind_len = len(sense_syn_ind)
-                for k, syn_ind in enumerate(sense_syn_ind):
-                    C2_ind[i][-sent2len+j][-sense_syn_ind_len+k][-len(syn_ind):] = syn_ind
-        return (S1, S2), (S1_ind, S2_ind), (C1_ind, C2_ind)
 
     # TODO: Make an abstract entailmant model class, and inherit LSTMEntailmentModel and OntoLSTMEntailmentModel classes each of owhich reimplements train function.
     def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, ontoLSTM=False, use_attention=False, num_epochs=20, mlp_size=1024, embedding=None, tune_embedding=True):
@@ -326,7 +236,7 @@ if __name__ == "__main__":
             tagged_sentences.append(tagged_sentence)
         max_sentlen = max(max_train_sentlen, max_test_sentlen)
         print >>sys.stderr, "Indexing training data"
-        _, (S1_ind, S2_ind), (C1_ind, C2_ind) = em.read_sentences(tagged_sentences, sentlenlimit=max_sentlen)
+        _, (S1_ind, S2_ind), (C1_ind, C2_ind) = em.dp.read_sentences(tagged_sentences, sentlenlimit=max_sentlen)
         do_train = True
     else:
         print >>sys.stderr, "Loading stored model"
@@ -340,7 +250,7 @@ if __name__ == "__main__":
 
     if do_test:
         print >>sys.stderr, "Indexing test data"
-        _, (S1_ind_test, S2_ind_test), (C1_ind_test, C2_ind_test) = em.read_sentences(tagged_sentences_test, sentlenlimit=max_sentlen)
+        _, (S1_ind_test, S2_ind_test), (C1_ind_test, C2_ind_test) = em.dp.read_sentences(tagged_sentences_test, sentlenlimit=max_sentlen)
     
 
     if do_train:

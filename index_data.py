@@ -15,8 +15,7 @@ class DataProcessor(object):
         self.word_hypernym_map = {}
         self.word_index = {"NONE": 0, "UNK": 1}
         self.synset_index = {"NONE": 0, "UNK": 1}
-        self.word_embedding = {}
-        self.synset_embedding = {}
+        # Word and synset embeddings are dict: index -> vector
         self.word_singletons = set([])
         self.word_non_singletons = set([])
         self.conc_singletons = set([])
@@ -132,80 +131,46 @@ class DataProcessor(object):
             conc_inds.append(word_conc_inds)
         return word_inds, conc_inds
 
-    def pad_array(self, array):
+    def pad_array(self, array, onto_aware):
         # Infer the shape of the array, and pad it appropriately.
         raise NotImplementedError    
 
-    # TODO: FInish the following function.
-    def prepare_input(self, tagged_sentences, sentlenlimit=None, onto_aware=False, output_vectors=False):
-        # onto_aware = True outputs synset indices.
-        # output_vectors = True outputs word vectors instead of indices.
-        # Read all sentences, prepare input for Keras pipeline. 
-        C_ind = numpy.zeros((num_sentences, sentlenlimit, self.num_senses, self.num_hyps), dtype='int32')
-        S_ind = numpy.zeros((num_sentences, sentlenlimit), dtype='int32')
-        S = numpy.zeros((num_sentences, sentlenlimit, self.word_dim))
-        for i, (sent1_words, (sent1_pos_tags, sent2_pos_tags)) in enumerate(zip(all_words, all_pos_tags)):
-            for word in sent1_words + sent2_words:
-                if word not in self.word_rep:
-                    rand_rep = self.numpy_rng.uniform(low=self.word_rep_min, high=self.word_rep_max, size=(self.word_dim))
-                    self.word_rep[word] = rand_rep
-            # Sentence 1 processing
-            sent1len = len(sent1_words)
-            sent1_word_inds, sent1_syn_inds = self.dp.index_sentence(sent1_words, sent1_pos_tags)
-            S1_ind[i][-sent1len:] = sent1_word_inds
-            for j in range(sent1len):
-                S1[i][-sent1len+j] = self.word_rep[sent1_words[j]]
-                sense_syn_ind = sent1_syn_inds[j]
-                sense_syn_ind_len = len(sense_syn_ind)
-                for k, syn_ind in enumerate(sense_syn_ind):
-                    C1_ind[i][-sent1len+j][-sense_syn_ind_len+k][-len(syn_ind):] = syn_ind
-            # Sentence 2 processing
-            sent2len = len(sent2_words)
-            sent2_word_inds, sent2_syn_inds = self.dp.index_sentence(sent2_words, sent2_pos_tags)
-            S2_ind[i][-sent2len:] = sent2_word_inds
-            for j in range(sent2len):
-                S2[i][-sent2len+j] = self.word_rep[sent2_words[j]]
-                sense_syn_ind = sent2_syn_inds[j]
-                sense_syn_ind_len = len(sense_syn_ind)
-                for k, syn_ind in enumerate(sense_syn_ind):
-                    C2_ind[i][-sent2len+j][-sense_syn_ind_len+k][-len(syn_ind):] = syn_ind
-        return (S1, S2), (S1_ind, S2_ind), (C1_ind, C2_ind)
-        """
-        C1_ind = numpy.zeros((num_sentences, sentlenlimit, self.num_senses, self.num_hyps), dtype='int32')
-        S1_ind = numpy.zeros((num_sentences, sentlenlimit), dtype='int32')
-        C2_ind = numpy.zeros((num_sentences, sentlenlimit, self.num_senses, self.num_hyps), dtype='int32')
-        S2_ind = numpy.zeros((num_sentences, sentlenlimit), dtype='int32')
-        S1 = numpy.zeros((num_sentences, sentlenlimit, self.word_dim))
-        S2 = numpy.zeros((num_sentences, sentlenlimit, self.word_dim))
-        for i, ((sent1_words, sent2_words), (sent1_pos_tags, sent2_pos_tags)) in enumerate(zip(all_words, all_pos_tags)):
-            for word in sent1_words + sent2_words:
-                if word not in self.word_rep:
-                    rand_rep = self.numpy_rng.uniform(low=self.word_rep_min, high=self.word_rep_max, size=(self.word_dim))
-                    self.word_rep[word] = rand_rep
-            # Sentence 1 processing
-            sent1len = len(sent1_words)
-            sent1_word_inds, sent1_syn_inds = self.dp.index_sentence(sent1_words, sent1_pos_tags)
-            S1_ind[i][-sent1len:] = sent1_word_inds
-            for j in range(sent1len):
-                S1[i][-sent1len+j] = self.word_rep[sent1_words[j]]
-                sense_syn_ind = sent1_syn_inds[j]
-                sense_syn_ind_len = len(sense_syn_ind)
-                for k, syn_ind in enumerate(sense_syn_ind):
-                    C1_ind[i][-sent1len+j][-sense_syn_ind_len+k][-len(syn_ind):] = syn_ind
-            # Sentence 2 processing
-            sent2len = len(sent2_words)
-            sent2_word_inds, sent2_syn_inds = self.dp.index_sentence(sent2_words, sent2_pos_tags)
-            S2_ind[i][-sent2len:] = sent2_word_inds
-            for j in range(sent2len):
-                S2[i][-sent2len+j] = self.word_rep[sent2_words[j]]
-                sense_syn_ind = sent2_syn_inds[j]
-                sense_syn_ind_len = len(sense_syn_ind)
-                for k, syn_ind in enumerate(sense_syn_ind):
-                    C2_ind[i][-sent2len+j][-sense_syn_ind_len+k][-len(syn_ind):] = syn_ind
-        return (S1, S2), (S1_ind, S2_ind), (C1_ind, C2_ind)
-        """
+    def prepare_input(self, tagged_sentences, sentlenlimit=None, onto_aware=False,
+            output_vectors=False, embedding_file=None):
+        # Read all sentences, prepare input for Keras pipeline.
+        # onto_aware = True: output synset indices or vectors instead of those for words.
+        # output_vectors = True: output vectors instead of indices.
+        if output_vectors:
+            assert embedding_file is not None, "Need embedding file to output vectors"
+        maxsentlen, all_words, all_pos_tags = self.read_sentences(tagged_sentences)
+        # sent_inds contains word inds if not onto_aware. Else, it will contain synset inds
+        unpadded_sent1_inds = []
+        unpadded_sent2_inds = []
+        for (sent1_words, sent2_words), (sent1_pos_tags, sent2_pos_tags) in zip(all_words, all_pos_tags):
+            sent1_word_inds, sent1_syn_inds = self.index_sentence(sent1_words, sent1_pos_tags)
+            sent2_word_inds, sent2_syn_inds = self.index_sentence(sent2_words, sent2_pos_tags)
+            if onto_aware:
+                unpadded_sent1_inds.append(sent1_syn_inds)
+                unpadded_sent2_inds.append(sent2_syn_inds)
+            else:
+                unpadded_sent1_inds.append(sent1_word_inds)
+                unpadded_sent2_inds.append(sent2_word_inds)
+        # Pad indices
+        padded_sent1_inds = self.pad_array(unpadded_sent1_inds, onto_aware)
+        padded_sent2_inds = self.pad_array(unpadded_sent2_inds, onto_aware)
 
-    def read_sentences(self, tagged_sentences, sentlenlimit=None):
+        # Make vectors if needed
+        if output_vectors:
+            embedding_matrix = self.get_embedding_matrix(embedding_file, onto_aware)
+            sent1_input = embedding_matrix[padded_sent1_inds]
+            sent2_input = embedding_matrix[padded_sent2_inds]
+        else: 
+            sent1_input = numpy.asarray(padded_sent1_inds, dtype='int32')
+            sent2_input = numpy.asarray(padded_sent2_inds, dtype='int32')
+        return sent1_input, sent2_input
+
+    def read_sentences(self, tagged_sentences):
+        # Preprocessing: Separate sentences, and output different arrays for words and tags.
         num_sentences = len(tagged_sentences)
         all_words = []
         all_pos_tags = []
@@ -236,11 +201,9 @@ class DataProcessor(object):
                 maxsentlen = len(sent2_words)
             all_words.append((sent1_words, sent2_words))
             all_pos_tags.append((sent1_pos_tags, sent2_pos_tags))
-        if not sentlenlimit:
-            sentlenlimit = maxsentlen
+        return maxsentlen, all_words, all_pos_tags 
 
-    # TODO: Index embeddings with indices, not strings.
-    def initialize_embedding(self, embedding_file, for_words=True):
+    def get_embedding_matrix(self, embedding_file, onto_aware):
         # embedding_file is a tsv with words on the first column and vectors on the
         # remaining. This will add to word_embedding if for_words is true, or else to 
         # synset embedding.
@@ -262,11 +225,12 @@ class DataProcessor(object):
                 rep_min = vec_min
                 embedding_map[element] = vec
         embedding_dim = len(vec)
-        target_embedding = self.word_embedding if for_words else self.synset_embedding
-        target_index = self.word_index if for_words else self.synset_index
+        target_index = self.synset_index if for_words else self.word_index
+        # Initialize target embedding with all random vectors
+        target_vocab_size = max(target_index.values()) + 1
+        target_embedding = numpy_rng.uniform(low=rep_min, high=rep_max, size=(target_vocab_size, embedding_dim))
         for element in target_index:
             if element in embedding_map:
                 vec = embedding_map[element]
-            else:
-                vec = numpy_rng.uniform(low=rep_min, high=vec_max, size=(embedding_dim, 1))
-            target_embedding[element] = vec
+            target_embedding[target_index[element]] = vec
+        return target_embedding

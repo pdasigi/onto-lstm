@@ -18,10 +18,7 @@ class EntailmentModel(object):
         self.num_hyps = num_hyps
         self.numpy_rng = numpy.random.RandomState(12345)
         self.word_rep = {}
-        self.word_dim = None
-        # TODO: Move the pretrained word embedding business to DataProcessor
-        if self.word_dim is not None and embed_file is None:
-            self.word_dim = word_dim
+        self.word_dim = word_dim
         self.model = None
 
     # TODO: Make an abstract entailmant model class, and inherit LSTMEntailmentModel and OntoLSTMEntailmentModel classes each of owhich reimplements train function.

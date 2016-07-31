@@ -131,9 +131,42 @@ class DataProcessor(object):
             conc_inds.append(word_conc_inds)
         return word_inds, conc_inds
 
-    def pad_array(self, array, onto_aware):
-        # Infer the shape of the array, and pad it appropriately.
-        raise NotImplementedError    
+    def pad_input(self, input_indices, onto_aware, sentlenlimit):
+        # If onto aware, expected output shape is (num_sentences, num_words, num_senses, num_hyps)
+        #   else, it is (num_sentences, num_words)
+        # sentlenlimit is the limit used for padding all sentences to make them the same length.
+        #   this applies only to the number of words. For senses and hyps, we'll use word_syn_cutoff 
+        # and syn_path_cutoff
+        # Recursive function!
+        # Given unpadded input at any dimensionality, and a list of limits on lengths at all the 
+        # following levels, pad the input appropriately.
+        def _pad_struct(struct, limits, padding):
+            '''
+            struct: Unpadded nested input array
+            limits: Lengths to pad the input to, at this level and all deeper levels of nesting.
+                Eg.: If the input is a matrix, [[1,2], [3]], and we need three rows and two columns, 
+                limits is [3, 2], and the output would be [[0, 0], [1,2], [0,3]]
+            '''
+            limit = limits[0]  # This level's limit
+            # Adding padding at the current level
+            for _ in range(limit - len(struct)):
+                struct = [padding] + struct
+            # Check if there are deeper levels
+            if len(limits) > 1:
+                return [_pad_struct(sub_struct, limits[1:], padding[0]) for sub_struct in struct]
+            else:
+                # If the input is already longer than limit, prune it.
+                return struct[-limit:]
+        if onto_aware:
+            sent_limits = [sentlenlimit, self.word_syn_cutoff, self.syn_path_cutoff]
+            sent_padding = [[0]]
+        else:
+            sent_limits = [sentlenlimit]
+            sent_padding = 0
+        # We do not need to pad at the sentence level. That is, we don't have a fixed num of sentences.
+        # So, we loop over sentences.
+        padded_input = [_pad_struct(word_indices, sent_limits, sent_padding) for word_indices in input_indices]
+        return padded_input
 
     def prepare_input(self, tagged_sentences, sentlenlimit=None, onto_aware=False,
             output_vectors=False, embedding_file=None):
@@ -143,6 +176,9 @@ class DataProcessor(object):
         if output_vectors:
             assert embedding_file is not None, "Need embedding file to output vectors"
         maxsentlen, all_words, all_pos_tags = self.read_sentences(tagged_sentences)
+        if not sentlenlimit:
+            # Not limit was set. Let's make all sentences as long as the longest sentence.
+            sentlenlimit = maxsentlen
         # sent_inds contains word inds if not onto_aware. Else, it will contain synset inds
         unpadded_sent1_inds = []
         unpadded_sent2_inds = []
@@ -156,8 +192,8 @@ class DataProcessor(object):
                 unpadded_sent1_inds.append(sent1_word_inds)
                 unpadded_sent2_inds.append(sent2_word_inds)
         # Pad indices
-        padded_sent1_inds = self.pad_array(unpadded_sent1_inds, onto_aware)
-        padded_sent2_inds = self.pad_array(unpadded_sent2_inds, onto_aware)
+        padded_sent1_inds = self.pad_input(unpadded_sent1_inds, onto_aware, sentlenlimit)
+        padded_sent2_inds = self.pad_input(unpadded_sent2_inds, onto_aware, sentlenlimit)
 
         # Make vectors if needed
         if output_vectors:

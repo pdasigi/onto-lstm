@@ -1,307 +1,351 @@
 import sys
 import numpy
-import gzip
 import argparse
 import pickle
-from index_data import DataProcessor
-from onto_attention import OntoAttentionLSTM
-from keras.models import Model, model_from_yaml
-from keras.layers import Activation, Dense, Dropout, Embedding, Input, LSTM, merge
-from keras_extensions import HigherOrderEmbedding
+import random
+
+from keras.models import Model, load_model
+from keras.layers import Dense, Dropout, Embedding, Input, LSTM, merge, TimeDistributed
 from keras.callbacks import EarlyStopping
 
+from index_data import DataProcessor
+from onto_attention import OntoAttentionLSTM
+
 class EntailmentModel(object):
-    def __init__(self, num_senses=2, num_hyps=5, word_dim=50, embed_file=None):
-        self.dp = DataProcessor(word_syn_cutoff=num_senses, syn_path_cutoff=num_hyps)
-        #self.max_hyps_per_word = num_senses * num_hyps
-        self.num_senses = num_senses
-        self.num_hyps = num_hyps
+    def __init__(self, **kwargs):
+        self.data_processor = DataProcessor()
+        if "embed_dim" in kwargs:
+            self.embed_dim = kwargs["embed_dim"]
+        else:
+            self.embed_dim = 50
         self.numpy_rng = numpy.random.RandomState(12345)
-        self.word_rep = {}
-        self.word_dim = word_dim
+        self.label_map = {}  # Maps labels to integers.
         self.model = None
 
-    # TODO: Make an abstract entailmant model class, and inherit LSTMEntailmentModel and OntoLSTMEntailmentModel classes each of owhich reimplements train function.
-    def train(self, S1_ind, S2_ind, C1_ind, C2_ind, label_ind, num_label_types, ontoLSTM=False, use_attention=False, num_epochs=20, mlp_size=1024, embedding=None, tune_embedding=True):
-        assert S1_ind.shape == S2_ind.shape
-        assert C1_ind.shape == C2_ind.shape
-        num_words = len(self.dp.word_index)
-        num_syns = len(self.dp.synset_index)
-        length = C1_ind.shape[1]
-        label_onehot = numpy.zeros((len(label_ind), num_label_types))
-        for i, ind in enumerate(label_ind):
-            label_onehot[i][ind] = 1.0
-        early_stopping = EarlyStopping(monitor='val_acc', patience=1)
-        if ontoLSTM:
-            print >>sys.stderr, "Using OntoLSTM"
-            if tune_embedding:
-                sent1 = Input(name='sent1', shape=C1_ind.shape[1:], dtype='int32')
-                sent2 = Input(name='sent2', shape=C2_ind.shape[1:], dtype='int32')
-                model_inputs = [sent1, sent2]
-                if embedding is None:
-                    embedding_layer = HigherOrderEmbedding(input_dim=num_syns, output_dim=self.word_dim, name='embedding', mask_zero=True)
-                else:
-                    embedding_layer = HigherOrderEmbedding(input_dim=num_syns, output_dim=self.word_dim, weights=[embedding], name='embedding', mask_zero=True)
-                sent1_embedding = embedding_layer(sent1)
-                sent2_embedding = embedding_layer(sent2)
+    def train(self):
+        raise NotImplementedError
+
+    @staticmethod
+    def _make_one_hot(indices):
+        # Accepts an array of indices, and converts them to a one-hot matrix
+        num_classes = max(indices) + 1  # Assuming that the range is [0, max]
+        one_hot_indices = numpy.zeros((len(indices), num_classes))
+        for i, ind in enumerate(indices):
+            one_hot_indices[i][ind] = 1.0
+        return one_hot_indices
+
+    def process_train_data(self, input_file, onto_aware):
+        print >>sys.stderr, "Reading training data"
+        label_ind = []
+        tagged_sentences = []
+        for line in open(input_file):
+            lnstrp = line.strip()
+            label, tagged_sentence = lnstrp.split("\t")
+            if label not in self.label_map:
+                self.label_map[label] = len(self.label_map)
+            label_ind.append(self.label_map[label])
+            tagged_sentences.append(tagged_sentence)
+        # Shuffling so that when Keras does validation split, it is not always at the end.
+        random.shuffle(tagged_sentences)
+        print >>sys.stderr, "Indexing training data"
+        train_inputs = self.data_processor.prepare_paired_input(tagged_sentences, onto_aware=onto_aware,
+            for_test=False, remove_singletons=True)
+        train_labels = self._make_one_hot(label_ind)
+        return train_inputs, train_labels
+
+    def process_test_data(self, input_file, onto_aware, is_labeled=True):
+        if not self.model:
+            raise RuntimeError, "Model not trained yet!"
+        print >>sys.stderr, "Reading test data"
+        label_ind = []
+        tagged_sentences = []
+        for line in open(input_file):
+            lnstrp = line.strip()
+            if is_labeled:
+                label, tagged_sentence = lnstrp.split("\t")
+                if label not in self.label_map:
+                    self.label_map[label] = len(self.label_map)
+                label_ind.append(self.label_map[label])
             else:
-                assert embedding is not None, "If you wish to fix the embedding (tune_embedding == False), initialize it (embedding should not be None)"
-                embed_dim = embedding.shape[1]
-                sent1_embedding = Input(name='sent1_embedding', shape=(C1_ind.shape[1:], C1_ind.shape[2], embed_dim))
-                sent1_embedding = Input(name='sent2_embedding', shape=(C2_ind.shape[1:], C2_ind.shape[2], embed_dim))
-                model_inputs = [sent1_embedding, sent2_embedding]
-            sent1_dropout = Dropout(0.5)(sent1_embedding)
-            sent2_dropout = Dropout(0.5)(sent2_embedding)
-            lstm = OntoAttentionLSTM(input_dim=self.word_dim, output_dim=self.word_dim/2, input_length=length, num_senses=self.num_senses, num_hyps=self.num_hyps, use_attention=use_attention, name='sent_lstm')
-            sent1_lstm_output = lstm(sent1_dropout)
-            sent2_lstm_output = lstm(sent2_dropout)
-            sent1_lstm_output_dropout = Dropout(0.2)(sent1_lstm_output)
-            sent2_lstm_output_dropout = Dropout(0.2)(sent2_lstm_output)
-            concat_sent_rep = merge([sent1_lstm_output_dropout, sent2_lstm_output_dropout], mode='concat')
-            mul_sent_rep = merge([sent1_lstm_output_dropout, sent2_lstm_output_dropout], mode='mul')
-            diff_sent_rep = merge([sent1_lstm_output_dropout, sent2_lstm_output_dropout], mode=lambda l: l[0]-l[1], output_shape=lambda l:l[0])
-            merged_sent_rep = merge([concat_sent_rep, mul_sent_rep, diff_sent_rep], mode='concat')
-            relu1 = Dense(output_dim=mlp_size, activation='relu')
-            relu2 = Dense(output_dim=mlp_size, activation='relu')
-            softmax = Dense(output_dim=num_label_types, activation='softmax')
-            label_probs = softmax(relu2(relu1(merged_sent_rep)))
-            model = Model(input=model_inputs, output=label_probs)
-            print >>sys.stderr, model.summary()
-            model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-            data_size = C1_ind.shape[0]
-            #train_size = int(data_size * 0.9)
-            train_size = max(data_size - 10000, 0.9*data_size)
-            model.fit([C1_ind[:train_size], C2_ind[:train_size]], label_onehot[:train_size], nb_epoch=num_epochs, validation_data=([C1_ind[train_size:], C2_ind[train_size:]], label_onehot[train_size:]), callbacks=[early_stopping])
-            self.model = model
-        else:
-            print >>sys.stderr, "Using traditional LSTM"
-            sent1 = Input(name='sent1', shape=S1_ind.shape[1:], dtype='int32')
-            sent2 = Input(name='sent2', shape=S2_ind.shape[1:], dtype='int32')
-            embedding_layer = Embedding(input_dim=num_words, output_dim=self.word_dim, name='embedding', mask_zero=True)
-            sent1_embedding = embedding_layer(sent1)
-            sent2_embedding = embedding_layer(sent2)
-            sent1_dropout = Dropout(0.5)(sent1_embedding)
-            sent2_dropout = Dropout(0.5)(sent2_embedding)
-            lstm = LSTM(input_dim=self.word_dim, output_dim=self.word_dim/2, input_length=length, name='sent_lstm')
-            sent1_lstm_out = lstm(sent1_dropout)
-            sent2_lstm_out = lstm(sent2_dropout)
-            sent1_lstm_output_dropout = Dropout(0.2)(sent1_lstm_out)
-            sent2_lstm_output_dropout = Dropout(0.2)(sent2_lstm_out)
-            concat_sent_rep = merge([sent1_lstm_output_dropout, sent2_lstm_output_dropout], mode='concat')
-            mul_sent_rep = merge([sent1_lstm_output_dropout, sent2_lstm_output_dropout], mode='mul')
-            diff_sent_rep = merge([sent1_lstm_output_dropout, sent2_lstm_output_dropout], mode=lambda l: l[0]-l[1], output_shape=lambda l:l[0])
-            merged_sent_rep = merge([concat_sent_rep, mul_sent_rep, diff_sent_rep], mode='concat')
-            relu1 = Dense(output_dim=mlp_size, activation='relu')
-            relu2 = Dense(output_dim=mlp_size, activation='relu')
-            softmax = Dense(output_dim=num_label_types, activation='softmax')
-            label_probs = softmax(relu2(relu1(merged_sent_rep)))
-            model = Model(input=[sent1, sent2], output=label_probs)
-            print >>sys.stderr, model.summary()
-            model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-            data_size = S1_ind.shape[0]
-            #train_size = int(data_size * 0.9)
-            train_size = max(data_size - 10000, 0.9*data_size)
-            model.fit([S1_ind[:train_size], S2_ind[:train_size]], label_onehot[:train_size], nb_epoch=num_epochs, validation_data=([S1_ind[train_size:], S2_ind[train_size:]], label_onehot[train_size:]), callbacks=[early_stopping])
-            self.model = model
-    # TODO: Generalize test method to take an array of inputs alone, to make it general enough to put it in the abstract class.
-    def test(self, label_ind_test, use_onto_lstm, S1_ind_test=None, S2_ind_test=None, C1_ind_test=None, C2_ind_test=None, num_label_types=3):
-        if not self.model:
-            raise RuntimeError, "Model not trained!"
-        label_onehot_test = numpy.zeros((len(label_ind_test), num_label_types))
-        for i, ind in enumerate(label_ind_test):
-            label_onehot_test[i][ind] = 1.0
-        if use_onto_lstm:
-            test_metrics = self.model.evaluate([C1_ind_test, C2_ind_test], label_onehot_test)
-            print >>sys.stderr, "Test accuracy: %.4f"%(test_metrics[1])
-            predictions = numpy.argmax(self.model.predict([C1_ind_test, C2_ind_test]), axis=1)
-        else:
-            test_metrics = self.model.evaluate([S1_ind_test, S2_ind_test], label_onehot_test)
-            print >>sys.stderr, "Test accuracy: %.4f"%(test_metrics[1])
-            predictions = numpy.argmax(self.model.predict([S1_ind_test, S2_ind_test]), axis=1)
-        return predictions
+                tagged_sentence = lnstrp
+            tagged_sentences.append(tagged_sentence)
+        print >>sys.stderr, "Indexing test data"
+        # Infer max sentence length if the model is trained
+        input_shape = self.model.get_input_shape_at(0)[0]  # take the shape of the first of two inputs at 0.
+        sentlenlimit = input_shape[1]  # (num_sentences, num_words, num_senses, num_hyps)
+        test_inputs = self.data_processor.prepare_paired_input(tagged_sentences, onto_aware=onto_aware,
+            sentlenlimit=sentlenlimit, for_test=True)
+        test_labels = self._make_one_hot(label_ind)
+        return test_inputs, test_labels
 
-    def get_attention(self, C_ind, embedding=None):
+    def test(self, inputs, targets):
         if not self.model:
             raise RuntimeError, "Model not trained!"
-        embedding_given = False if embedding is None else True
-        model_embedding = None
-        model_lstm = None
+        metrics = self.model.evaluate(inputs, targets)
+        print >>sys.stderr, "Test accuracy: %.4f" % (metrics[1])  # The first metric is loss.
+        predictions = numpy.argmax(self.model.predict(inputs), axis=1)
+        rev_label_map = {ind: label for label, ind in self.label_map.items()}
+        predicted_labels = [rev_label_map[pred] for pred in predictions]
+        return predicted_labels
+
+    def save_model(self, serialized_model_prefix):
+        self.model.save("%s.model" % serialized_model_prefix)
+        pickle.dump(self.data_processor, open("%s.dataproc" % serialized_model_prefix, "wb"))
+    
+    def load_model(self, serialized_model_prefix, custom_objects={}):
+        self.model = load_model("%s.model" % serialized_model_prefix, custom_objects=custom_objects)
+        self.data_processor = pickle.load(open("%s.dataproc" % serialized_model_prefix, "rb"))
+
+
+class LSTMEntailmentModel(EntailmentModel):
+    def train(self, train_inputs, train_labels, num_epochs=20, mlp_size=1024, mlp_activation='relu',
+        dropout={"embedding": 0.5, "encoder": 0.2}, embedding_file=None, tune_embedding=True):
+        '''
+        train_inputs (list(numpy_array)): The two sentence inputs
+        train_labels (numpy_array): One-hot matrix indicating labels
+        num_epochs (int): Maximum number of epochs to run
+        mlp_size (int): Dimensionality of each layer in the MLP
+        dropout (dict(str->float)): Probabilities in Dropout layers after "embedding" and "encoder" (lstm)
+        embedding (numpy): Optional pretrained embedding
+        tune_embedding (bool): If pretrained embedding is given, tune it.
+        '''
+        if embedding_file is None:
+            if not tune_embedding:
+                print >>sys.stderr, "Pretrained embedding is not given. Setting tune_embedding to True."
+                tune_embedding = True
+            embedding = None
+        else:
+            # Put the embedding in a list for Keras to treat it as initiali weights of the embeddign layer.
+            embedding = [self.data_processor.get_embedding_matrix(embedding_file, onto_aware=False)]
+        num_label_types = train_labels.shape[1]  # train_labels is of shape (num_samples, num_label_types)
+        vocab_size = self.data_processor.get_vocab_size(onto_aware=False)
+        sent1_input_layer = Input(name='sent1', shape=train_inputs[0].shape[1:], dtype='int32')
+        sent2_input_layer = Input(name='sent2', shape=train_inputs[1].shape[1:], dtype='int32')
+        embedding_layer = Embedding(input_dim=vocab_size, output_dim=self.embed_dim, weights=embedding,
+            trainable=tune_embedding, mask_zero=True, name="embedding")
+        embedded_sent1 = embedding_layer(sent1_input_layer)
+        embedded_sent2 = embedding_layer(sent2_input_layer)
+        if "embedding" in dropout:
+            embedded_sent1 = Dropout(dropout["embedding"])(embedded_sent1)
+            embedded_sent2 = Dropout(dropout["embedding"])(embedded_sent2)
+        lstm = LSTM(input_dim=self.embed_dim, output_dim=self.embed_dim, name="encoder")
+        encoded_sent1 = lstm(embedded_sent1)
+        encoded_sent2 = lstm(embedded_sent2)
+        if "encoder" in dropout:
+            encoded_sent1 = Dropout(dropout["encoder"])(encoded_sent1)
+            encoded_sent2 = Dropout(dropout["encoder"])(encoded_sent2)
+        concat_sent_rep = merge([encoded_sent1, encoded_sent2], mode='concat')
+        mul_sent_rep = merge([encoded_sent1, encoded_sent2], mode='mul')
+        diff_sent_rep = merge([encoded_sent1, encoded_sent2], mode=lambda l: l[0]-l[1], output_shape=lambda l:l[0])
+        # Use heuristic from Mou et al. (2015) to get final merged representation
+        merged_sent_rep = merge([concat_sent_rep, mul_sent_rep, diff_sent_rep], mode='concat')
+        # TODO: Make the number of mlp layers a hyperparameter and expose it.
+        mlp_layer1 = Dense(output_dim=mlp_size, activation=mlp_activation)
+        mlp_layer2 = Dense(output_dim=mlp_size, activation=mlp_activation)
+        softmax = Dense(output_dim=num_label_types, activation='softmax')
+        label_probs = softmax(mlp_layer2(mlp_layer1(merged_sent_rep)))
+        model = Model(input=[sent1_input_layer, sent2_input_layer], output=label_probs)
+        model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+        print >>sys.stderr, "Entailment model summary:"
+        print >>sys.stderr, model.summary()
+        # TODO: Proper early stopping
+        early_stopping = EarlyStopping(monitor='val_acc', patience=1)
+        model.fit(train_inputs, train_labels, validation_split=0.1, callbacks=[early_stopping])
+        self.model = model
+
+
+class OntoLSTMEntailmentModel(EntailmentModel):
+    def __init__(self, num_senses, num_hyps, **kwargs):
+        super(OntoLSTMEntailmentModel, self).__init__(**kwargs)
+        # Set self.data_processor again, now with the right arguments.
+        self.data_processor = DataProcessor(word_syn_cutoff=num_senses, syn_path_cutoff=num_hyps)
+        self.num_senses = num_senses
+        self.num_hyps = num_hyps
+        self.attention_model = None  # Keras model with just embedding and encoder to output attention.
+
+    def train(self, train_inputs, train_labels, use_attention=False, num_epochs=20, mlp_size=1024,
+        mlp_activation='relu', dropout={"embedding": 0.5, "encoder": 0.2}, embedding_file=None, tune_embedding=True):
+        '''
+        train_inputs (list(numpy_array)): The two sentence inputs
+        train_labels (numpy_array): One-hot matrix indicating labels
+        use_attention (bool): Use attention in OntoLSTM
+        num_epochs (int): Maximum number of epochs to run
+        mlp_size (int): Dimensionality of each layer in the MLP
+        dropout (dict(str->float)): Probabilities in Dropout layers after "embedding" and "encoder" (lstm)
+        embedding (numpy): Optional pretrained embedding
+        tune_embedding (bool): If pretrained embedding is given, tune it.
+        '''
+        if embedding_file is None:
+            if not tune_embedding:
+                print >>sys.stderr, "Pretrained embedding is not given. Setting tune_embedding to True."
+                tune_embedding = True
+            embedding = None
+        else:
+            # Put the embedding in a list for Keras to treat it as initiali weights of the embeddign layer.
+            embedding = [self.data_processor.get_embedding_matrix(embedding_file, onto_aware=True)]
+        num_label_types = train_labels.shape[1]  # train_labels is of shape (num_samples, num_label_types)
+        vocab_size = self.data_processor.get_vocab_size(onto_aware=True)
+        sent1_input_layer = Input(name='sent1', shape=train_inputs[0].shape[1:], dtype='int32')
+        sent2_input_layer = Input(name='sent2', shape=train_inputs[1].shape[1:], dtype='int32')
+        embedding_layer = Embedding(input_dim=vocab_size, output_dim=self.embed_dim, weights=embedding,
+            mask_zero=True, trainable=tune_embedding)
+        higher_order_embedding = TimeDistributed(TimeDistributed(embedding_layer), name="embedding")  # Input has two more dimensions than embedding expects
+        embedded_sent1 = higher_order_embedding(sent1_input_layer)
+        embedded_sent2 = higher_order_embedding(sent2_input_layer)
+        if "embedding" in dropout:
+            embedded_sent1 = Dropout(dropout["embedding"])(embedded_sent1)
+            embedded_sent2 = Dropout(dropout["embedding"])(embedded_sent2)
+        lstm = OntoAttentionLSTM(input_dim=self.embed_dim, output_dim=self.embed_dim, num_senses=self.num_senses,
+                num_hyps=self.num_hyps, use_attention=use_attention, name="encoder")
+        encoded_sent1 = lstm(embedded_sent1)
+        encoded_sent2 = lstm(embedded_sent2)
+        if "encoder" in dropout:
+            encoded_sent1 = Dropout(dropout["encoder"])(encoded_sent1)
+            encoded_sent2 = Dropout(dropout["encoder"])(encoded_sent2)
+        concat_sent_rep = merge([encoded_sent1, encoded_sent2], mode='concat')
+        mul_sent_rep = merge([encoded_sent1, encoded_sent2], mode='mul')
+        diff_sent_rep = merge([encoded_sent1, encoded_sent2], mode=lambda l: l[0]-l[1], output_shape=lambda l:l[0])
+        # Use heuristic from Mou et al. (2015) to get final merged representation
+        merged_sent_rep = merge([concat_sent_rep, mul_sent_rep, diff_sent_rep], mode='concat')
+        # TODO: Make the number of mlp layers a hyperparameter and expose it.
+        mlp_layer1 = Dense(output_dim=mlp_size, activation=mlp_activation)
+        mlp_layer2 = Dense(output_dim=mlp_size, activation=mlp_activation)
+        softmax = Dense(output_dim=num_label_types, activation='softmax')
+        label_probs = softmax(mlp_layer2(mlp_layer1(merged_sent_rep)))
+        model = Model(input=[sent1_input_layer, sent2_input_layer], output=label_probs)
+        model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+        print >>sys.stderr, "Entailment model summary:"
+        print >>sys.stderr, model.summary()
+        # TODO: Proper early stopping
+        early_stopping = EarlyStopping(monitor='val_acc', patience=1)
+        model.fit(train_inputs, train_labels, validation_split=0.1, callbacks=[early_stopping])
+        self.model = model
+        
+    def get_attention(self, inputs):
+        # Takes inputs and returns pairs of synsets and corresponding attention values.
+        if not self.attention_model:
+            self.define_attention_model()
+        attention_outputs = self.attention_model.predict(inputs)
+        sent_attention_values = []
+        for sentence_input, sentence_attention in zip(inputs, attention_outputs):
+            word_attention_values = []
+            for word_input, word_attention in zip(sentence_input, sentence_attention):
+                if word_input.sum() == 0:
+                    # This is just padding
+                    continue
+                sense_attention_values = []
+                for sense_input, sense_attention in zip(word_input, word_attention):
+                    if sense_input.sum() == 0:
+                        continue
+                    hyp_attention_values = []
+                    for hyp_input, hyp_attention in zip(sense_input, sense_attention):
+                        if hyp_input == 0:
+                            continue
+                        hyp_attention_values.append((self.data_processor.get_token_from_index(hyp_input,
+                                                        onto_aware=True), hyp_attention))
+                    sense_attention_values.append(hyp_attention_values)
+                word_attention_values.append(sense_attention_values)
+            sent_attention_values.append(word_attention_values)
+        return sent_attention_values
+
+    def define_attention_model(self):
+        # Take necessary parts out of the entailment model to get OntoLSTM attention.
+        if not self.model:
+            raise RuntimeError, "Model not trained yet!"
+        input_layer = None
+        embedding_layer = None
+        encoder_layer = None
+        # We need just one input to get attention.
         for layer in self.model.layers:
-            if layer.name == "embedding":
-                model_embedding = layer
-            if layer.name == "sent_lstm":
-                model_lstm = layer
-        if not (model_embedding or embedding_given) or not model_lstm:
-            raise RuntimeError, "Did not find the layers expected"
-        lstm_weights = model_lstm.get_weights()
-        import pickle
-        pkl_file = open("lstm_weights.pkl", "wb")
-        pickle.dump(lstm_weights, pkl_file)
-        pkl_file.close()
-        if not embedding_given:
-            sent = Input(shape=C_ind.shape[1:], dtype='int32')
-            embedding_weights = model_embedding.get_weights()
-            embed_in_dim, embed_out_dim = embedding_weights[0].shape
-            att_embedding = HigherOrderEmbedding(input_dim=embed_in_dim, output_dim=embed_out_dim, weights=embedding_weights)
-            sent_embedding = att_embedding(sent)
-            att_input = sent
-        else:
-            _, embed_out_dim = embedding.shape
-            sent_embedding = Input(shape=(C_ind.shape[1], C_ind.shape[2], embed_out_dim))
-            att_input = sent_embedding
-        onto_lstm = OntoAttentionLSTM(input_dim=embed_out_dim, output_dim=embed_out_dim/2, input_length=model_lstm.input_length, num_senses=self.num_senses, num_hyps=self.num_hyps, use_attention=True, return_attention=True, weights=lstm_weights)
-        att_output = onto_lstm(sent_embedding)
-        att_model = Model(input=att_input, output=att_output)
-        att_model.compile(optimizer='adam', loss='mse') # optimizer and loss are not needed since we are not going to train this model.
-        C_att = att_model.predict(C_ind) if not embedding_given else att_model.predict(embedding[C_ind])
-        print >>sys.stderr, "Got attention values. Input, output shapes:", C_ind.shape, C_att.shape
-        return C_att
+            if layer.name == "sent1":
+                input_layer = layer
+            elif layer.name == "embedding":
+                embedding_layer = layer
+            elif layer.name == "encoder":
+                # We need to redefine the OntoLSTM layer with the learned weights and set return attention to True.
+                # Assuming we'll want attention values for all words (return_sequences = True)
+                encoder_layer = OntoAttentionLSTM(input_dim=self.embed_dim, output_dim=self.embed_dim,
+                        num_senses=self.num_senses, num_hyps=self.num_hyps, use_attention=use_attention,
+                        return_attention=True, return_sequences=True, weights=layer.get_weights())
+        if not input_layer or not embedding_layer or not encoder_layer:
+            raise RuntimeError, "Required layers not found!"
+        attention_output = encoder_layer(embedding_layer(input_layer))
+        self.attention_model = Model(input=input_layer, output=attention_out)
+        self.attention_model.compile(loss="mse", optimizer="sgd")  # Loss and optimizer do not matter!
 
-if __name__ == "__main__":
-    argparser = argparse.ArgumentParser(description="Train entailment model using ontoLSTM or traditional LSTM")
+    def print_attention_values(self, input_file, output_file):
+        onto_aware = True
+        test_inputs, _ = self.process_test_data(input_file, onto_aware)
+        sent1_attention_outputs = self.get_attention(test_inputs[0])
+        sent2_attention_outputs = self.get_attention(test_inputs[1])
+        tagged_sentences = [x.strip().split("\t")[1] for x in codecs.open(input_file).readlines()]
+        outfile = codecs.open(output_file, "w", "utf-8")
+        for sent1_attention, sent2_attention, tagged_sentence in zip(sent1_attention_outputs, sent2_attention_outpus, tagged_sentences):
+            print >>outfile, tagged_sentence
+            print >>outfile, "Sentence 1:"
+            for word_attention in sent1_attention:
+                for sense_attention in word_attention:
+                    print >>outfile, " ".join(["%s:%f" % (hyp, hyp_att) for hyp, hyp_att in sense_attention])
+                print >>outfile
+            print >>outfile, "\nSentence 2:"
+            for word_attention in sent2_attention:
+                for sense_attention in word_attention:
+                    print >>outfile, " ".join(["%s:%f" % (hyp, hyp_att) for hyp, hyp_att in sense_attention])
+                print >>outfile
+        outfile.close()
+
+
+def main():
+    argparser = argparse.ArgumentParser(description="Train entailment model")
     argparser.add_argument('--train_file', type=str, help="TSV file with label, premise, hypothesis in three columns")
-    argparser.add_argument('--repfile', type=str, help="Gzipped word embedding file")
-    argparser.add_argument('--word_dim', type=int, help="Word/Synset vector size", default=50)
-    argparser.add_argument('--use_onto_lstm', help="Use ontoLSTM. If this flag is not set, will use traditional LSTM", action='store_true')
+    argparser.add_argument('--embedding_file', type=str, help="Gzipped embedding file")
+    argparser.add_argument('--embed_dim', type=int, help="Word/Synset vector size", default=50)
+    argparser.add_argument('--onto_aware', help="Use ontoLSTM. If this flag is not set, will use traditional LSTM", action='store_true')
     argparser.add_argument('--num_senses', type=int, help="Number of senses per word if using OntoLSTM (default 2)", default=2)
     argparser.add_argument('--num_hyps', type=int, help="Number of hypernyms per sense if using OntoLSTM (default 5)", default=5)
     argparser.add_argument('--use_attention', help="Use attention in ontoLSTM. If this flag is not set, will use average concept representations", action='store_true')
     argparser.add_argument('--test_file', type=str, help="Optionally provide test file for which accuracy will be computed")
     argparser.add_argument('--attention_output', type=str, help="Print attention values of the validation data in the given file")
-    argparser.add_argument('--synset_embedding', type=str, help="File with synset vectors")
-    argparser.add_argument('--fix_embedding', help="File with synset vectors", action='store_true')
+    argparser.add_argument('--tune_embedding', help="Fine tune pretrained embedding (if provided)", action='store_true')
     argparser.add_argument('--num_epochs', type=int, help="Number of epochs (default 20)", default=20)
+    argparser.add_argument('--mlp_size', type=int, help="Size of each layer in MLP (default 1024)", default=1024)
+    argparser.add_argument('--mlp_activation', type=str, help="MLP activation (default relu)", default='relu')
+    argparser.add_argument('--embedding_dropout', type=float, help="Dropout after embedding", default=0.5)
+    argparser.add_argument('--encoder_dropout', type=float, help="Dropout after encoder", default=0.2)
     args = argparser.parse_args()
-    use_synset_embedding = False
-    vec_max = -float("inf")
-    vec_min = float("inf")
-    if args.synset_embedding:
-        synset_embedding = {}
-        for line in gzip.open(args.synset_embedding):
-            ln_parts = line.strip().split()
-            if len(ln_parts) == 2:
-                continue
-            word = ln_parts[0]
-            vec = numpy.asarray([float(f) for f in ln_parts[1:]])
-            vec_max = max(max(vec), vec_max)
-            vec_min = min(min(vec), vec_min)
-            synset_embedding[word] = vec
-        vec_dim = len(vec)
-        use_synset_embedding = True
-    em = EntailmentModel(num_senses=args.num_senses, num_hyps=args.num_hyps, word_dim=args.word_dim, embed_file=args.repfile)
-    tagged_sentences = []
-    label_map = {}
-    label_ind = []
-    sentlenlimit = None
-    do_test = False
-    do_train = False
-    S1_ind_test = None
-    S2_ind_test = None
-    C1_ind_test = None
-    C2_ind_test = None
-    label_ind_test = None
-    max_test_sentlen = 0
-    model_name_prefix = "ent_model_ontolstm=%s_att=%s_senses=%d_hyps=%d"%(str(args.use_onto_lstm), str(args.use_attention), args.num_senses, args.num_hyps)
-    
-    if args.test_file is not None:
-        print >>sys.stderr, "Reading test data"
-        tagged_sentences_test = []
-        label_ind_test = []
-        for line in open(args.test_file):
-            lnstrp = line.strip()
-            label, tagged_sentence = lnstrp.split("\t")
-            if label not in label_map:
-                label_map[label] = len(label_map)
-            label_ind_test.append(label_map[label])
-            test_sentlen = len(tagged_sentence.split())
-            if test_sentlen > max_test_sentlen:
-                max_test_sentlen = test_sentlen
-            tagged_sentences_test.append(tagged_sentence)
-        do_test = True
-    if args.train_file is not None:
-        print >>sys.stderr, "Reading training data"
-        max_train_sentlen = 0
-        for line in open(args.train_file):
-            lnstrp = line.strip()
-            label, tagged_sentence = lnstrp.split("\t")
-            if label not in label_map:
-                label_map[label] = len(label_map)
-            label_ind.append(label_map[label])
-            train_sentlen = len(tagged_sentence.split())
-            if train_sentlen > max_train_sentlen:
-                max_train_sentlen = train_sentlen
-            tagged_sentences.append(tagged_sentence)
-        max_sentlen = max(max_train_sentlen, max_test_sentlen)
-        print >>sys.stderr, "Indexing training data"
-        _, (S1_ind, S2_ind), (C1_ind, C2_ind) = em.dp.read_sentences(tagged_sentences, sentlenlimit=max_sentlen)
-        do_train = True
+    if args.onto_aware:
+        entailment_model = OntoLSTMEntailmentModel(num_senses=args.num_senses, num_hyps=args.num_hyps,
+            embed_dim=args.embed_dim)
+        model_name_prefix = "ontolstm_ent_att=%s_senses=%d_hyps=%d"%(str(args.use_attention), args.num_senses,
+            args.num_hyps)
+        custom_objects = {"OntoAttentionLSTM": OntoAttentionLSTM}
     else:
-        print >>sys.stderr, "Loading stored model"
-        em.model = model_from_yaml(open("%s.yaml"%model_name_prefix).read(), custom_objects={"HigherOrderEmbedding": HigherOrderEmbedding, "OntoAttentionLSTM": OntoAttentionLSTM})
-        print >>sys.stderr, em.model.summary()
-        em.model.load_weights("%s.h5"%model_name_prefix)
-        em.model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-        dataproc_pkl_file = open("%s_dataproc.pkl"%model_name_prefix)
-        em.dp = pickle.load(dataproc_pkl_file)
-        max_sentlen = em.model.get_input_shape_at(0)[0][1]
+        entailment_model = LSTMEntailmentModel(embed_dim=args.embed_dim)
+        model_name_prefix = "lstm_ent"
+        custom_objects = {}
 
-    if do_test:
-        print >>sys.stderr, "Indexing test data"
-        _, (S1_ind_test, S2_ind_test), (C1_ind_test, C2_ind_test) = em.dp.read_sentences(tagged_sentences_test, sentlenlimit=max_sentlen)
+    ## Train model or load trained model
+    if args.train_file is None:
+        entailment_model.load_model(model_name_prefix, custom_objects=custom_objects)
+    else:
+        train_inputs, train_labels = entailment_model.process_train_data(args.train_file, onto_aware=args.onto_aware)
+        dropout = {"embedding": args.embedding_dropout, "encoder": args.encoder_dropout}
+        if args.onto_aware:
+            entailment_model.train(train_inputs, train_labels, use_attention=args.use_attention,
+                num_epochs=args.num_epochs, mlp_size=args.mlp_size, mlp_activation=args.mlp_activation,
+                dropout=dropout,embedding_file=args.embedding_file, tune_embedding=args.tune_embedding)
+        else:
+            # Same as above, except no attention.
+            entailment_model.train(train_inputs, train_labels, num_epochs=args.num_epochs, mlp_size=args.mlp_size,
+                mlp_activation=args.mlp_activation, dropout=dropout,embedding_file=args.embedding_file,
+                tune_embedding=args.tune_embedding)
     
+    ## Test model
+    if args.test_file is not None:
+        test_inputs, test_labels = entailment_model.process_test_data(args.test_file, onto_aware=args.onto_aware)
+        test_predictions = entailment_model.test(test_inputs, test_labels)
+        if args.attention_output is not None:
+            entailment_model.print_attention_values(args.test_file, args.attention_output)
 
-    if do_train:
-        print >>sys.stderr, "Training on provided data"
-        if use_synset_embedding:
-            ind_synset_embedding = em.numpy_rng.uniform(low=vec_min, high=vec_max, size=(len(em.dp.synset_index), vec_dim))
-            for syn in em.dp.synset_index:
-                if syn in synset_embedding:
-                    ind_synset_embedding[em.dp.synset_index[syn]] = synset_embedding[syn]
-            print >>sys.stderr, "Using pretrained synset embeddings"
-            em.train(S1_ind, S2_ind, C1_ind, C2_ind, label_ind, len(label_map), ontoLSTM=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs, embedding=ind_synset_embedding)
-        else: 
-            print >>sys.stderr, "Will learn synset embeddings"
-            em.train(S1_ind, S2_ind, C1_ind, C2_ind, label_ind, len(label_map), ontoLSTM=args.use_onto_lstm, use_attention=args.use_attention, num_epochs=args.num_epochs)
-    
-        model_yaml_string = em.model.to_yaml()
-        open("%s.yaml"%model_name_prefix, "w").write(model_yaml_string)
-        em.model.save_weights("%s.h5"%model_name_prefix, overwrite=True)
-        dataproc_pkl_file = open("%s_dataproc.pkl"%model_name_prefix, "w")
-        pickle.dump(em.dp, dataproc_pkl_file)
-    if do_test:
-        predictions = em.test(label_ind_test, use_onto_lstm=args.use_onto_lstm, S1_ind_test=S1_ind_test, S2_ind_test=S2_ind_test, C1_ind_test=C1_ind_test, C2_ind_test=C2_ind_test)
-        rev_label_map = {v:k for k, v in label_map.items()}
-        test_outfile = open("%s.out"%model_name_prefix, "w")
-        for pred in predictions:
-            print >>test_outfile, rev_label_map[pred] 
-        test_outfile.close()
-    if args.attention_output is not None:
-        if not do_test:
-            raise RuntimeError, "Provide a test file"
-        rev_synset_ind = {ind: syn for (syn, ind) in em.dp.synset_index.items()}
-        C_ind = numpy.concatenate([C1_ind_test, C2_ind_test])
-        C_att = em.get_attention(C_ind, ind_synset_embedding) if args.fix_embedding else em.get_attention(C_ind) 
-        C1_att, C2_att = numpy.split(C_att, 2)
-        # Concatenate sentence 1 and 2 in each data point
-        C_sj_ind = numpy.concatenate([C1_ind_test, C2_ind_test], axis=1)
-        C_sj_att = numpy.concatenate([C1_att, C2_att], axis=1)
-        outfile = open(args.attention_output, "w")
-        for i, (sent, sent_c_inds, sent_c_atts) in enumerate(zip(tagged_sentences_test, C_sj_ind, C_sj_att)):
-            print >>outfile, "SENT %d: %s"%(i, sent)
-            words = sent.replace(" |||", "").split()
-            word_id = 0
-            for word_c_inds, word_c_atts in zip(sent_c_inds, sent_c_atts):
-                if word_c_inds.sum() == 0:
-                    continue
-                sense_id = 0
-                print >>outfile, "Attention for %s"%(words[word_id])
-                word_id += 1
-                for s_h_ind, s_h_att in zip(word_c_inds, word_c_atts):
-                    if sum(s_h_ind) == 0:
-                        continue
-                    print >>outfile, "\nSense %d"%(sense_id)
-                    sense_id += 1
-                    for h_ind, h_att in zip(s_h_ind, s_h_att):
-                        print >>outfile, rev_synset_ind[h_ind], h_att 
-                print >>outfile
-            print >>outfile
+if __name__ == "__main__":
+    main()

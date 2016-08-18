@@ -15,12 +15,18 @@ class DataProcessor(object):
         self.word_hypernym_map = {}
         self.word_index = {"NONE": 0, "UNK": 1}
         self.synset_index = {"NONE": 0, "UNK": 1}
+        self.reverse_word_index = {0: "NONE", 1: "UNK"}
+        self.reverse_synset_index = {0: "NONE", 1: "UNK"}
         # Word and synset embeddings are dict: index -> vector
         self.word_singletons = set([])
         self.word_non_singletons = set([])
         self.conc_singletons = set([])
         self.conc_non_singletons = set([])
         self.numpy_rng = numpy.random.RandomState(12345)
+
+    # TODO: Take a coarse-grained mapping file and implement the following function.
+    def map_fine_to_coarse(self, syn_name):
+        raise NotImplementedError
         
     def get_hypernyms_syn(self, syn, path_cutoff=None):
         if not path_cutoff:
@@ -68,7 +74,7 @@ class DataProcessor(object):
         return hypernyms
 
     # TODO: Separate methods for returning word inds and conc inds
-    def index_sentence(self, words, pos_tags, test=False, remove_singletons=False):
+    def index_sentence(self, words, pos_tags, for_test, remove_singletons):
         word_inds = []
         conc_inds = []
         wn_pos_tags = []
@@ -108,7 +114,7 @@ class DataProcessor(object):
                             self.conc_singletons.add(syn)
         for word, wn_pos in zip(words, wn_pos_tags):
             word_conc_inds = []
-            if word not in self.word_index and not test:
+            if word not in self.word_index and not for_test:
                 if remove_singletons and word in self.word_singletons:
                     self.word_index[word] = self.word_index['UNK']
                 else:
@@ -118,7 +124,7 @@ class DataProcessor(object):
                 word_sense_conc_inds = []
                 # Most specific concept will be at the end
                 for syn in reversed(sense_syns):
-                    if syn not in self.synset_index and not test:
+                    if syn not in self.synset_index and not for_test:
                         if remove_singletons and syn in self.conc_singletons:
                             self.synset_index[syn] = self.synset_index['UNK']
                         else:
@@ -168,42 +174,47 @@ class DataProcessor(object):
         padded_input = [_pad_struct(word_indices, sent_limits, sent_padding) for word_indices in input_indices]
         return padded_input
 
-    def prepare_input(self, tagged_sentences, sentlenlimit=None, onto_aware=False,
-            output_vectors=False, embedding_file=None):
+    def prepare_input(self, tagged_sentences, sentlenlimit=None, onto_aware=False, for_test=False,
+            remove_singletons=False):
         # Read all sentences, prepare input for Keras pipeline.
         # onto_aware = True: output synset indices or vectors instead of those for words.
-        # output_vectors = True: output vectors instead of indices.
-        if output_vectors:
-            assert embedding_file is not None, "Need embedding file to output vectors"
         maxsentlen, all_words, all_pos_tags = self.read_sentences(tagged_sentences)
         if not sentlenlimit:
             # Not limit was set. Let's make all sentences as long as the longest sentence.
             sentlenlimit = maxsentlen
         # sent_inds contains word inds if not onto_aware. Else, it will contain synset inds
-        unpadded_sent1_inds = []
-        unpadded_sent2_inds = []
-        for (sent1_words, sent2_words), (sent1_pos_tags, sent2_pos_tags) in zip(all_words, all_pos_tags):
-            sent1_word_inds, sent1_syn_inds = self.index_sentence(sent1_words, sent1_pos_tags)
-            sent2_word_inds, sent2_syn_inds = self.index_sentence(sent2_words, sent2_pos_tags)
+        unpadded_sent_inds = []
+        for words, pos_tags in zip(all_words, all_pos_tags):
+            word_inds, syn_inds = self.index_sentence(words, pos_tags, for_test, remove_singletons)
             if onto_aware:
-                unpadded_sent1_inds.append(sent1_syn_inds)
-                unpadded_sent2_inds.append(sent2_syn_inds)
+                unpadded_sent_inds.append(syn_inds)
             else:
-                unpadded_sent1_inds.append(sent1_word_inds)
-                unpadded_sent2_inds.append(sent2_word_inds)
+                unpadded_sent_inds.append(word_inds)
         # Pad indices
-        padded_sent1_inds = self.pad_input(unpadded_sent1_inds, onto_aware, sentlenlimit)
-        padded_sent2_inds = self.pad_input(unpadded_sent2_inds, onto_aware, sentlenlimit)
+        padded_sent_inds = self.pad_input(unpadded_sent_inds, onto_aware, sentlenlimit)
 
-        # Make vectors if needed
-        if output_vectors:
-            embedding_matrix = self.get_embedding_matrix(embedding_file, onto_aware)
-            sent1_input = embedding_matrix[padded_sent1_inds]
-            sent2_input = embedding_matrix[padded_sent2_inds]
-        else: 
-            sent1_input = numpy.asarray(padded_sent1_inds, dtype='int32')
-            sent2_input = numpy.asarray(padded_sent2_inds, dtype='int32')
-        return sent1_input, sent2_input
+        sent_input = numpy.asarray(padded_sent_inds, dtype='int32')
+        # Update reverse indices
+        if onto_aware:
+            self.reverse_synset_index = {ind: synset for synset, ind in self.synset_index.items()}
+        else:
+            self.reverse_word_index = {ind: word for word, ind in self.word_index.items()}
+        return sent_input
+
+    def prepare_paired_input(self, tagged_sentence_pairs, sentlenlimit=None, onto_aware=False, for_test=False,
+            remove_singletons=False):
+        # Use this method for tasks like textual entailment where the input is a pair of sentences.
+        first_sentences, second_sentences = zip(*[sentence_pair.split(" ||| ") for sentence_pair in tagged_sentence_pairs])
+        # Assuming the same encoder will be used for encoding both the inputs, Keras requires the lengths be same.
+        # If sentlenlimit is not provided, let's make sure prepare_input receives the max of the two lengths.
+        if sentlenlimit is None:
+            sentlenlimit = max([len(sentence.split(" ")) for sentence in first_sentences + second_sentences])
+        first_sentence_input = self.prepare_input(first_sentences, sentlenlimit=sentlenlimit, onto_aware=onto_aware,
+                for_test=for_test, remove_singletons=remove_singletons)
+        second_sentence_input = self.prepare_input(second_sentences, sentlenlimit=sentlenlimit, onto_aware=onto_aware, 
+                for_test=for_test, remove_singletons=remove_singletons)
+        # Returning a list to let Keras directly process it.
+        return [first_sentence_input, second_sentence_input]
 
     def read_sentences(self, tagged_sentences):
         # Preprocessing: Separate sentences, and output different arrays for words and tags.
@@ -212,31 +223,19 @@ class DataProcessor(object):
         all_pos_tags = []
         maxsentlen = 0
         for tagged_sentence in tagged_sentences:
-            sent1_words = []
-            sent1_pos_tags = []
-            sent2_words = []
-            sent2_pos_tags = []
-            in_first_sent = True
+            words = []
+            pos_tags = []
             # Expects each token to be a "_" separated combination of word and POS tag.
             for word_tag in tagged_sentence.split(" "):
-                if word_tag == "|||":
-                    in_first_sent = False
-                    continue
-                else:
-                    word, tag = word_tag.split("_")
+                word, tag = word_tag.split("_")
                 word = word.lower()
-                if in_first_sent:
-                    sent1_words.append(word)
-                    sent1_pos_tags.append(tag)
-                else:
-                    sent2_words.append(word)
-                    sent2_pos_tags.append(tag)
-            if len(sent1_words) > maxsentlen:
-                maxsentlen = len(sent1_words)
-            if len(sent2_words) > maxsentlen:
-                maxsentlen = len(sent2_words)
-            all_words.append((sent1_words, sent2_words))
-            all_pos_tags.append((sent1_pos_tags, sent2_pos_tags))
+                words.append(word)
+                pos_tags.append(tag)
+            sentlen = len(words)
+            if sentlen > maxsentlen:
+                maxsentlen = sentlen
+            all_words.append(words)
+            all_pos_tags.append(pos_tags)
         return maxsentlen, all_words, all_pos_tags 
 
     def get_embedding_matrix(self, embedding_file, onto_aware):
@@ -261,7 +260,7 @@ class DataProcessor(object):
                 rep_min = vec_min
                 embedding_map[element] = vec
         embedding_dim = len(vec)
-        target_index = self.synset_index if for_words else self.word_index
+        target_index = self.synset_index if onto_aware else self.word_index
         # Initialize target embedding with all random vectors
         target_vocab_size = max(target_index.values()) + 1
         target_embedding = numpy_rng.uniform(low=rep_min, high=rep_max, size=(target_vocab_size, embedding_dim))
@@ -270,3 +269,11 @@ class DataProcessor(object):
                 vec = embedding_map[element]
             target_embedding[target_index[element]] = vec
         return target_embedding
+
+    def get_token_from_index(self, index, onto_aware=True):
+        token = self.reverse_synset_index[index] if onto_aware else self.reverse_word_index[index]
+        return token 
+    
+    def get_vocab_size(self, onto_aware=True):
+        vocab_size = len(self.synset_index) if onto_aware else len(self.word_index)
+        return vocab_size

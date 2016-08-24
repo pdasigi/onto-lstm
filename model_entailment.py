@@ -1,8 +1,9 @@
 import sys
-import numpy
 import argparse
 import pickle
 import random
+import codecs
+import numpy
 
 from keras.models import Model, load_model
 from keras.layers import Dense, Dropout, Embedding, Input, LSTM, merge, TimeDistributed
@@ -46,7 +47,9 @@ class EntailmentModel(object):
             label_ind.append(self.label_map[label])
             tagged_sentences.append(tagged_sentence)
         # Shuffling so that when Keras does validation split, it is not always at the end.
-        random.shuffle(tagged_sentences)
+        sentences_and_labels = zip(tagged_sentences, label_ind)
+        random.shuffle(sentences_and_labels)
+        tagged_sentences, label_ind = zip(*sentences_and_labels)
         print >>sys.stderr, "Indexing training data"
         train_inputs = self.data_processor.prepare_paired_input(tagged_sentences, onto_aware=onto_aware,
             for_test=False, remove_singletons=True)
@@ -91,7 +94,7 @@ class EntailmentModel(object):
     def save_model(self, serialized_model_prefix):
         self.model.save("%s.model" % serialized_model_prefix)
         pickle.dump(self.data_processor, open("%s.dataproc" % serialized_model_prefix, "wb"))
-    
+
     def load_model(self, serialized_model_prefix, custom_objects={}):
         self.model = load_model("%s.model" % serialized_model_prefix, custom_objects=custom_objects)
         self.data_processor = pickle.load(open("%s.dataproc" % serialized_model_prefix, "rb"))
@@ -149,8 +152,9 @@ class LSTMEntailmentModel(EntailmentModel):
         print >>sys.stderr, "Entailment model summary:"
         print >>sys.stderr, model.summary()
         # TODO: Proper early stopping
-        early_stopping = EarlyStopping(monitor='val_acc', patience=1)
-        model.fit(train_inputs, train_labels, validation_split=0.1, callbacks=[early_stopping])
+        early_stopping = EarlyStopping(monitor='val_acc', patience=5)
+        model.fit(train_inputs, train_labels, validation_split=0.1, callbacks=[early_stopping],
+                  nb_epoch=num_epochs)
         self.model = model
 
 
@@ -217,8 +221,9 @@ class OntoLSTMEntailmentModel(EntailmentModel):
         print >>sys.stderr, "Entailment model summary:"
         print >>sys.stderr, model.summary()
         # TODO: Proper early stopping
-        early_stopping = EarlyStopping(monitor='val_acc', patience=1)
-        model.fit(train_inputs, train_labels, validation_split=0.1, callbacks=[early_stopping])
+        early_stopping = EarlyStopping(monitor='val_acc', patience=5)
+        model.fit(train_inputs, train_labels, validation_split=0.1, callbacks=[early_stopping],
+                  nb_epoch=num_epochs)
         self.model = model
         
     def get_attention(self, inputs):
@@ -265,12 +270,12 @@ class OntoLSTMEntailmentModel(EntailmentModel):
                 # We need to redefine the OntoLSTM layer with the learned weights and set return attention to True.
                 # Assuming we'll want attention values for all words (return_sequences = True)
                 encoder_layer = OntoAttentionLSTM(input_dim=self.embed_dim, output_dim=self.embed_dim,
-                        num_senses=self.num_senses, num_hyps=self.num_hyps, use_attention=use_attention,
+                        num_senses=self.num_senses, num_hyps=self.num_hyps, use_attention=True,
                         return_attention=True, return_sequences=True, weights=layer.get_weights())
         if not input_layer or not embedding_layer or not encoder_layer:
             raise RuntimeError, "Required layers not found!"
         attention_output = encoder_layer(embedding_layer(input_layer))
-        self.attention_model = Model(input=input_layer, output=attention_out)
+        self.attention_model = Model(input=input_layer, output=attention_output)
         self.attention_model.compile(loss="mse", optimizer="sgd")  # Loss and optimizer do not matter!
 
     def print_attention_values(self, input_file, output_file):
@@ -280,7 +285,7 @@ class OntoLSTMEntailmentModel(EntailmentModel):
         sent2_attention_outputs = self.get_attention(test_inputs[1])
         tagged_sentences = [x.strip().split("\t")[1] for x in codecs.open(input_file).readlines()]
         outfile = codecs.open(output_file, "w", "utf-8")
-        for sent1_attention, sent2_attention, tagged_sentence in zip(sent1_attention_outputs, sent2_attention_outpus, tagged_sentences):
+        for sent1_attention, sent2_attention, tagged_sentence in zip(sent1_attention_outputs, sent2_attention_outputs, tagged_sentences):
             print >>outfile, tagged_sentence
             print >>outfile, "Sentence 1:"
             for word_attention in sent1_attention:

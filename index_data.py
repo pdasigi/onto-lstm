@@ -1,4 +1,5 @@
 import re
+import gzip
 import numpy
 from nltk.corpus import wordnet as wn
 
@@ -254,16 +255,16 @@ class DataProcessor(object):
             element = ln_parts[0]
             vec = numpy.asarray([float(f) for f in ln_parts[1:]])
             vec_max, vec_min = vec.max(), vec.min()
-            if vec_max > word_rep_max:
+            if vec_max > rep_max:
                 rep_max = vec_max
-            if vec_min < word_rep_min:
+            if vec_min < rep_min:
                 rep_min = vec_min
                 embedding_map[element] = vec
         embedding_dim = len(vec)
         target_index = self.synset_index if onto_aware else self.word_index
         # Initialize target embedding with all random vectors
-        target_vocab_size = max(target_index.values()) + 1
-        target_embedding = numpy_rng.uniform(low=rep_min, high=rep_max, size=(target_vocab_size, embedding_dim))
+        target_vocab_size = self.get_vocab_size(onto_aware=onto_aware)
+        target_embedding = self.numpy_rng.uniform(low=rep_min, high=rep_max, size=(target_vocab_size, embedding_dim))
         for element in target_index:
             if element in embedding_map:
                 vec = embedding_map[element]
@@ -275,5 +276,5 @@ class DataProcessor(object):
         return token 
     
     def get_vocab_size(self, onto_aware=True):
-        vocab_size = len(self.synset_index) if onto_aware else len(self.word_index)
+        vocab_size = max(self.synset_index.values()) + 1 if onto_aware else max(self.word_index.values()) + 1
         return vocab_size

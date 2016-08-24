@@ -76,6 +76,9 @@ class DataProcessor(object):
 
     # TODO: Separate methods for returning word inds and conc inds
     def index_sentence(self, words, pos_tags, for_test, remove_singletons):
+        if remove_singletons:
+            # TODO: Singleton definition should not be done in this method.
+            raise NotImplementedError, "Cannot remove singletons yet!"
         word_inds = []
         conc_inds = []
         wn_pos_tags = []

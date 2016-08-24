@@ -52,7 +52,7 @@ class EntailmentModel(object):
         tagged_sentences, label_ind = zip(*sentences_and_labels)
         print >>sys.stderr, "Indexing training data"
         train_inputs = self.data_processor.prepare_paired_input(tagged_sentences, onto_aware=onto_aware,
-            for_test=False, remove_singletons=True)
+            for_test=False, remove_singletons=False)
         train_labels = self._make_one_hot(label_ind)
         return train_inputs, train_labels
 
@@ -112,6 +112,15 @@ class LSTMEntailmentModel(EntailmentModel):
         embedding (numpy): Optional pretrained embedding
         tune_embedding (bool): If pretrained embedding is given, tune it.
         '''
+        rev_label_map = {ind: label for label, ind in self.label_map.items()}
+        print >>sys.stderr, "Training on pairs like:"
+        for label_ind, sent1_indices, sent2_indices in zip(train_labels, *train_inputs)[:5]:
+            sent1 = " ".join([self.data_processor.get_token_from_index(word_ind, onto_aware=False) for word_ind in sent1_indices])
+            sent2 = " ".join([self.data_processor.get_token_from_index(word_ind, onto_aware=False) for word_ind in sent2_indices])
+            sent1 = sent1.replace("NONE", "").strip()
+            sent2 = sent2.replace("NONE", "").strip()
+            label = rev_label_map[numpy.argmax(label_ind)]
+            print >>sys.stderr, label, sent1, sent2
         if embedding_file is None:
             if not tune_embedding:
                 print >>sys.stderr, "Pretrained embedding is not given. Setting tune_embedding to True."

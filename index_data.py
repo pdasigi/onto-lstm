@@ -74,13 +74,7 @@ class DataProcessor(object):
                 hypernyms = [[word]]
         return hypernyms
 
-    # TODO: Separate methods for returning word inds and conc inds
-    def index_sentence(self, words, pos_tags, for_test, remove_singletons):
-        if remove_singletons:
-            # TODO: Singleton definition should not be done in this method.
-            raise NotImplementedError, "Cannot remove singletons yet!"
-        word_inds = []
-        conc_inds = []
+    def get_hypernyms_sentence(self, words, pos_tags):
         wn_pos_tags = []
         for pos_tag in pos_tags:
             if pos_tag.startswith("J"):
@@ -94,6 +88,7 @@ class DataProcessor(object):
             else:
                 wn_pos = None
             wn_pos_tags.append(wn_pos)
+        sentence_hyps = []
         for word, wn_pos in zip(words, wn_pos_tags):
             word = word.lower()
             if (word, wn_pos) in self.word_hypernym_map:
@@ -101,45 +96,41 @@ class DataProcessor(object):
             else:
                 word_hyps = self.get_hypernyms_word(word, wn_pos)
                 self.word_hypernym_map[(word, wn_pos)] = word_hyps
-            # Add to singletons or non-singletons
-            if word not in self.word_non_singletons:
-                if word in self.word_singletons:
-                    self.word_singletons.remove(word)
-                    self.word_non_singletons.add(word)
-                else:
-                    self.word_singletons.add(word)
-            for sense_syns in word_hyps:
-                for syn in sense_syns:
-                    if syn not in self.conc_non_singletons:
-                        if syn in self.conc_singletons:
-                            self.conc_singletons.remove(syn)
-                            self.conc_non_singletons.add(syn)
-                        else:
-                            self.conc_singletons.add(syn)
-        for word, wn_pos in zip(words, wn_pos_tags):
-            word_conc_inds = []
-            if word not in self.word_index and not for_test:
-                if remove_singletons and word in self.word_singletons:
-                    self.word_index[word] = self.word_index['UNK']
-                else:
-                    self.word_index[word] = len(self.word_index)
-            word_hyps = self.word_hypernym_map[(word, wn_pos)]
-            for sense_syns in word_hyps:
-                word_sense_conc_inds = []
-                # Most specific concept will be at the end
-                for syn in reversed(sense_syns):
-                    if syn not in self.synset_index and not for_test:
-                        if remove_singletons and syn in self.conc_singletons:
-                            self.synset_index[syn] = self.synset_index['UNK']
-                        else:
-                            self.synset_index[syn] = len(self.synset_index)
-                    conc_ind = self.synset_index[syn] if syn in self.synset_index else self.synset_index['UNK']
-                    word_sense_conc_inds.append(conc_ind)
-                word_conc_inds.append(word_sense_conc_inds)
-            word_ind = self.word_index[word] if word in self.word_index else self.word_index['UNK']
-            word_inds.append(word_ind)
-            conc_inds.append(word_conc_inds)
-        return word_inds, conc_inds
+            sentence_hyps.append(word_hyps)
+        return sentence_hyps
+
+    # TODO: Separate methods for returning word inds and conc inds
+    def index_sentence(self, words, pos_tags, for_test, remove_singletons, onto_aware):
+        if onto_aware:
+            sentence_hyps = self.get_hypernyms_sentence(words, pos_tags)
+            conc_inds = []
+            for word_hyps in sentence_hyps:
+                word_conc_inds = []
+                for sense_syns in word_hyps:
+                    word_sense_conc_inds = []
+                    # Most specific concept will be at the end
+                    for syn in reversed(sense_syns):
+                        if syn not in self.synset_index and not for_test:
+                            if remove_singletons and syn in self.conc_singletons:
+                                self.synset_index[syn] = self.synset_index['UNK']
+                            else:
+                                self.synset_index[syn] = len(self.synset_index)
+                        conc_ind = self.synset_index[syn] if syn in self.synset_index else self.synset_index['UNK']
+                        word_sense_conc_inds.append(conc_ind)
+                    word_conc_inds.append(word_sense_conc_inds)
+                conc_inds.append(word_conc_inds)
+            return conc_inds
+        else:
+            word_inds = []
+            for word in words:
+                if word not in self.word_index and not for_test:
+                    if remove_singletons and word in self.word_singletons:
+                        self.word_index[word] = self.word_index['UNK']
+                    else:
+                        self.word_index[word] = len(self.word_index)
+                word_ind = self.word_index[word] if word in self.word_index else self.word_index['UNK']
+                word_inds.append(word_ind)
+            return word_inds
 
     def pad_input(self, input_indices, onto_aware, sentlenlimit):
         # If onto aware, expected output shape is (num_sentences, num_words, num_senses, num_hyps)
@@ -183,17 +174,41 @@ class DataProcessor(object):
         # Read all sentences, prepare input for Keras pipeline.
         # onto_aware = True: output synset indices or vectors instead of those for words.
         maxsentlen, all_words, all_pos_tags = self.read_sentences(tagged_sentences)
+        if remove_singletons:
+            # Define singletons here.
+            if onto_aware:
+                all_sentence_hyps = [self.get_hypernyms_sentence(words, pos_tags) 
+                                     for words, pos_tags in zip(all_words, all_pos_tags)]
+                for words, pos_tags in zip(all_words, all_pos_tags):
+                    sentence_hyps = self.get_hypernyms_sentence(words, pos_tags)
+                    for word_hyps in sentence_hyps:
+                        for sense_syns in word_hyps:
+                            for syn in sense_syns:
+                                if syn not in self.conc_non_singletons:
+                                    if syn in self.conc_singletons:
+                                        self.conc_singletons.remove(syn)
+                                        self.conc_non_singletons.add(syn)
+                                    else:
+                                        self.conc_singletons.add(syn)
+
+            else:
+                for words in all_words:
+                    for word in words:
+                        if word not in self.word_non_singletons:
+                            if word in self.word_singletons:
+                                self.word_singletons.remove(word)
+                                self.word_non_singletons.add(word)
+                            else:
+                                self.word_singletons.add(word)
         if not sentlenlimit:
             # Not limit was set. Let's make all sentences as long as the longest sentence.
             sentlenlimit = maxsentlen
         # sent_inds contains word inds if not onto_aware. Else, it will contain synset inds
         unpadded_sent_inds = []
         for words, pos_tags in zip(all_words, all_pos_tags):
-            word_inds, syn_inds = self.index_sentence(words, pos_tags, for_test, remove_singletons)
-            if onto_aware:
-                unpadded_sent_inds.append(syn_inds)
-            else:
-                unpadded_sent_inds.append(word_inds)
+            # These will either be syn_inds or word_inds depending on onto_aware.
+            indexed_inputs = self.index_sentence(words, pos_tags, for_test, remove_singletons, onto_aware)
+            unpadded_sent_inds.append(indexed_inputs)
         # Pad indices
         padded_sent_inds = self.pad_input(unpadded_sent_inds, onto_aware, sentlenlimit)
 

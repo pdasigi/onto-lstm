@@ -52,7 +52,7 @@ class EntailmentModel(object):
         tagged_sentences, label_ind = zip(*sentences_and_labels)
         print >>sys.stderr, "Indexing training data"
         train_inputs = self.data_processor.prepare_paired_input(tagged_sentences, onto_aware=onto_aware,
-            for_test=False, remove_singletons=False)
+            for_test=False, remove_singletons=True)
         train_labels = self._make_one_hot(label_ind)
         return train_inputs, train_labels
 

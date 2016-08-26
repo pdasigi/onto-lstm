@@ -2,7 +2,6 @@ import warnings
 
 from keras.layers import LSTM
 from keras.engine import InputSpec
-from keras import regularizers
 from keras import backend as K
 #from keras_extensions import rnn
 
@@ -39,37 +38,38 @@ class OntoAttentionLSTM(LSTM):
         self.input_dim = input_dim
         # Saving onto-lstm weights to set them later. This way, LSTM's build method won't 
         # delete them.
-        self.initial_ontolstm_weights = self.initial_weights
+        initial_ontolstm_weights = self.initial_weights
         self.initial_weights = None
         lstm_input_shape = input_shape[:2] + (input_shape[4],) # removing senses and hyps
         # Now calling LSTM's build to initialize the LSTM weights
         super(OntoAttentionLSTM, self).build(lstm_input_shape)
         # This would have changed the input shape and ndim. Reset it again.
         self.input_spec = [InputSpec(shape=input_shape)]
-        
+
         if self.use_attention:
             # Following are the attention parameters
             # Sense projection and scoring
-            self.P_sense_syn_att = self.inner_init((input_dim, self.output_dim), 
-                name='{}_P_sense_syn_att'.format(self.name)) # Projection operator for synsets
-            self.P_sense_cont_att = self.inner_init((self.output_dim, self.output_dim),
-                name='{}_P_sense_cont_att'.format(self.name)) # Projection operator for hidden state (context)
-            self.s_sense_att = self.init((self.output_dim,), name='{}_s_senses_att'.format(self.name))
+            self.input_sense_projector = self.inner_init((input_dim, self.output_dim), 
+                name='{}_input_sense_projector'.format(self.name)) # Projection operator for synsets
+            self.context_sense_projector = self.inner_init((self.output_dim, self.output_dim),
+                name='{}_context_sense_projector'.format(self.name)) # Projection operator for hidden state (context)
+            self.sense_scorer = self.init((self.output_dim,), name='{}_sense_scorer'.format(self.name))
 
             # Generalization projection and scoring
-            self.P_gen_syn_att = self.inner_init((input_dim, self.output_dim),
-                name='{}_P_sense_gen_att'.format(self.name)) # Projection operator for synsets
-            self.P_gen_cont_att = self.inner_init((self.output_dim, self.output_dim),
-                name='{}_P_gen_cont_att'.format(self.name)) # Projection operator for hidden state (context)
-            self.s_gen_att = self.init((self.output_dim,), name='{}_s_gen_att'.format(self.name))
+            self.input_hyp_projector = self.inner_init((input_dim, self.output_dim),
+                name='{}_input_hyp_projector'.format(self.name)) # Projection operator for synsets
+            self.context_hyp_projector = self.inner_init((self.output_dim, self.output_dim),
+                name='{}_context_hyp_projector'.format(self.name)) # Projection operator for hidden state (context)
+            self.hyp_scorer = self.init((self.output_dim,), name='{}_hyp_scorer'.format(self.name))
 
             # LSTM's build method would have initialized trainable_weights. Add to it.
-            self.trainable_weights.extend([self.P_sense_syn_att, self.P_sense_cont_att, self.s_sense_att,
-                                           self.P_gen_syn_att, self.P_gen_cont_att, self.s_gen_att])
+            self.trainable_weights.extend([self.input_sense_projector, self.context_sense_projector,
+                                           self.sense_scorer, self.input_hyp_projector, 
+                                           self.context_hyp_projector, self.hyp_scorer])
 
-        if self.initial_ontolstm_weights is not None:
-            self.set_weights(self.initial_ontolstm_weights)
-            del self.initial_ontolstm_weights
+        if initial_ontolstm_weights is not None:
+            self.set_weights(initial_ontolstm_weights)
+            del initial_ontolstm_weights
 
     def get_initial_states(self, x):
         # Reimplementing because ndim of x is 5. (samples, timesteps, num_senses, num_hyps, input_dim)
@@ -77,7 +77,7 @@ class OntoAttentionLSTM(LSTM):
         # We need the same initial states as regular LSTM
         return super(OntoAttentionLSTM, self).get_initial_states(sense_hyp_stripped_x)
 
-    def _step(self, x_cs, states):
+    def _step(self, x_onto_aware, states):
         h_tm1 = states[0]
 
         # Before the step function is called, the original input is dimshuffled to have (time, samples, senses, hyps, concept_dim)
@@ -85,34 +85,47 @@ class OntoAttentionLSTM(LSTM):
         # TODO: Better definition of attention, and attention weight regularization
         if self.use_attention:
             # Sense attention
-            # Consider an average of all syns in each sense
-            # TODO: Get rid of tensordot and dependence on theano.tensor
-            s_syn_proj = K.T.tensordot(x_cs.mean(axis=2).dimshuffle(1,0,2), self.P_sense_syn_att, axes=(2,0)) # (senses, samples, proj_dim)
-            s_cont_proj = K.dot(h_tm1, self.P_sense_cont_att) # (samples, proj_dim)
+            x_hyp_averaged = K.mean(x_onto_aware, axis=2)  # (samples, sense, input_dim)
+            input_sense_projection = K.dot(x_hyp_averaged, self.input_sense_projector)  # (samples, senses, proj_dim)
+            context_sense_projection = K.dot(h_tm1, self.context_sense_projector) # (samples, proj_dim)
             # TODO: Expose attention activation
-            s_x_proj = K.sigmoid(s_syn_proj + s_cont_proj) # (senses, samples, proj_dim)
-            sense_att = K.softmax(K.T.tensordot(s_x_proj.dimshuffle(1,0,2), self.s_sense_att, axes=(2,0))) # (samples, senses)
+            sense_projection = K.sigmoid(input_sense_projection + K.expand_dims(context_sense_projection, dim=1))  # (samples, senses, proj_dim)
+            sense_scores = K.dot(sense_projection, self.sense_scorer)  # (samples, senses)
+            #sense_attention = K.softmax(sense_scores) # (samples, senses)
 
             # Generalization attention
-            g_syn_proj = K.T.tensordot(x_cs.dimshuffle(1,2,0,3), self.P_gen_syn_att, axes=(3,0)) # (senses, hyps, samples, proj_dim)
-            g_cont_proj = K.dot(h_tm1, self.P_gen_cont_att) # (samples, proj_dim)
-            g_x_proj = K.sigmoid(g_syn_proj + g_cont_proj) # (senses, hyps, samples, proj_dim)
-            gen_scores = K.T.tensordot(g_x_proj.dimshuffle(2,0,1,3), self.s_gen_att, axes=(3,0)) # (samples, senses, hyps)
-            gs_shape = gen_scores.shape
-            gen_scores_rs = gen_scores.reshape((gs_shape[0] * gs_shape[1], gs_shape[2]))
-            gen_att_rs = K.softmax(gen_scores_rs).reshape((gs_shape[2], gs_shape[0], gs_shape[1]))
+            input_hyp_projection = K.dot(x_onto_aware, self.input_hyp_projector) # (samples, senses, hyps, proj_dim)
+            context_hyp_projection = K.dot(h_tm1, self.context_hyp_projector) # (samples, proj_dim)
+            context_hyp_projection_expanded = K.expand_dims(K.expand_dims(context_hyp_projection,
+                                                                          dim=1),
+                                                            dim=1)  #(samples, 1, 1, proj_dim)
+            hyp_projection = K.sigmoid(input_hyp_projection + context_hyp_projection_expanded) # (samples, senses, hyps, proj_dim)
+            hyp_scores = K.dot(hyp_projection, self.hyp_scorer) # (samples, senses, hyps)
+            # Now we need to compute softmax of gen_scores. But we need to reshape it first since we
+            # cannot perform softmax on tensors. We need \sum_{senses} \sum_{hyps} gen_att[i] = 1.0,
+            # for each sample i.
+            #hyp_scores_shape = K.shape(hyp_scores)
+            #flat_hyp_scores = K.batch_flatten(hyp_scores)  # (samples, senses * hyps)
+            #hyp_attention = K.reshape(K.softmax(flat_hyp_scores), hyp_scores_shape)  # (samples, senses, hyps)
+            # (samples, senses, hyps) * (samples, senses, 1)
+            #sense_hyp_attention = (hyp_attention * K.expand_dims(sense_attention))  # (samples, senses, hyps)
 
-            # We need gen_att dimshuffled to (hyps, samples, senses), so reshaping into the needed order of dims
-            att = (gen_att_rs * sense_att).dimshuffle(1,2,0) # (samples, senses, hyps)
-
-            lstm_input_t = (x_cs.dimshuffle(3,0,1,2) * att).sum(axis=(2,3)).T # [\sum_{(senses, hyps)} (in_dim, samples, senses, hyps) X (samples, senses, hyps)].T = (samples, in_dim)
+            # Multiply hyp and sense scores and then normalize. Attention values now sum to 1.
+            sense_hyp_scores = (hyp_scores * K.expand_dims(sense_scores))  # (samples, senses, hyps)
+            scores_shape = K.shape(sense_hyp_scores)
+            # We need to flatten this because we cannot perform softmax on tensors.
+            flattened_scores = K.batch_flatten(sense_hyp_scores)  # (samples, senses*hyps)
+            sense_hyp_attention = K.reshape(K.softmax(flattened_scores), scores_shape)  # (samples, senses, hyps)
+            weighted_product = x_onto_aware * K.expand_dims(sense_hyp_attention)  # (samples, senses, hyps, input_dim)
+            # Weighted average, summing over senses and hyps
+            lstm_input_t = K.sum(weighted_product, axis=(1,2))  # (samples, input_dim)
         else:
-            att = K.zeros_like(x_cs).sum(axis=-1) # matrix of zeros for attention to be consistent (samples, senses, hyps)
-            lstm_input_t = K.mean(x_cs, axis=(1,2)) # shape of x is (samples, concept_dim)
+            sense_hyp_attention = K.sum(K.zeros_like(x_onto_aware), axis=-1)  # matrix of zeros for attention to be consistent (samples, senses, hyps)
+            lstm_input_t = K.mean(x_onto_aware, axis=(1,2))  # shape of x is (samples, concept_dim)
         # Now pass the computed lstm_input to LSTM's step function to get current h and c.
         h, [_, c] = super(OntoAttentionLSTM, self).step(lstm_input_t, states)
         
-        return h, c, att
+        return h, c, sense_hyp_attention
         
     def step(self, x_cs, states):
         h, c, att = self._step(x_cs, states)

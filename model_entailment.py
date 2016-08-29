@@ -360,10 +360,10 @@ def main():
         train_inputs, train_labels = entailment_model.process_train_data(args.train_file, onto_aware=args.onto_aware)
         dropout = {"embedding": args.embedding_dropout, "encoder": args.encoder_dropout}
         if args.onto_aware:
-            entailment_model.train(train_inputs, train_labels, use_attention=args.use_attention,
-                                   num_epochs=args.num_epochs, mlp_size=args.mlp_size,
-                                   mlp_activation=args.mlp_activation, dropout=dropout,
-                                   embedding_file=args.embedding_file, tune_embedding=args.tune_embedding)
+            entailment_model.train(train_inputs, train_labels, num_epochs=args.num_epochs,
+                                   mlp_size=args.mlp_size, mlp_activation=args.mlp_activation,
+                                   dropout=dropout, embedding_file=args.embedding_file,
+                                   tune_embedding=args.tune_embedding)
         else:
             # Same as above, except no attention.
             entailment_model.train(train_inputs, train_labels, num_epochs=args.num_epochs,

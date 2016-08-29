@@ -1,4 +1,5 @@
 import re
+import sys
 import gzip
 import numpy
 from nltk.corpus import wordnet as wn
@@ -277,16 +278,21 @@ class DataProcessor(object):
                 rep_max = vec_max
             if vec_min < rep_min:
                 rep_min = vec_min
-                embedding_map[element] = vec
+            embedding_map[element] = vec
         embedding_dim = len(vec)
         target_index = self.synset_index if onto_aware else self.word_index
         # Initialize target embedding with all random vectors
         target_vocab_size = self.get_vocab_size(onto_aware=onto_aware)
         target_embedding = self.numpy_rng.uniform(low=rep_min, high=rep_max, size=(target_vocab_size, embedding_dim))
+        num_found_elements = 0
+        num_all_elements = 0
         for element in target_index:
+            num_all_elements += 1
             if element in embedding_map:
                 vec = embedding_map[element]
-            target_embedding[target_index[element]] = vec
+                target_embedding[target_index[element]] = vec
+                num_found_elements += 1
+        print >>sys.stderr, "Found vectors for %.4f of the words" % (float(num_found_elements) / num_all_elements)
         return target_embedding
 
     def get_token_from_index(self, index, onto_aware=True):

@@ -7,7 +7,6 @@ import numpy
 
 from keras.models import Model, load_model
 from keras.layers import Dense, Dropout, Embedding, Input, LSTM, merge, TimeDistributed
-from keras.callbacks import EarlyStopping
 
 from index_data import DataProcessor
 from onto_attention import OntoAttentionLSTM
@@ -22,8 +21,67 @@ class EntailmentModel(object):
         self.numpy_rng = numpy.random.RandomState(12345)
         self.label_map = {}  # Maps labels to integers.
         self.model = None
+        self.best_epoch = 0  # index of the best epoch
+        self.model_name_prefix = None
+        self.custom_objects = None
 
-    def train(self):
+    def train(self, train_inputs, train_labels, num_epochs=20, mlp_size=1024, mlp_activation='relu',
+              dropout=None, embedding_file=None, tune_embedding=True,
+              patience=5):
+        '''
+        train_inputs (list(numpy_array)): The two sentence inputs
+        train_labels (numpy_array): One-hot matrix indicating labels
+        num_epochs (int): Maximum number of epochs to run
+        mlp_size (int): Dimensionality of each layer in the MLP
+        dropout (dict(str->float)): Probabilities in Dropout layers after "embedding" and "encoder" (lstm)
+        embedding (numpy): Optional pretrained embedding
+        tune_embedding (bool): If pretrained embedding is given, tune it.
+        patience (int): Early stopping patience
+        '''
+        if dropout is None:
+            dropout = {}
+        num_label_types = train_labels.shape[1]  # train_labels is of shape (num_samples, num_label_types)
+        sent1_input_layer = Input(name='sent1', shape=train_inputs[0].shape[1:], dtype='int32')
+        sent2_input_layer = Input(name='sent2', shape=train_inputs[1].shape[1:], dtype='int32')
+        encoded_sent1, encoded_sent2 = self._get_encoded_sentence_variables(sent1_input_layer,
+                                                                            sent2_input_layer, dropout,
+                                                                            embedding_file, tune_embedding)
+        concat_sent_rep = merge([encoded_sent1, encoded_sent2], mode='concat')
+        mul_sent_rep = merge([encoded_sent1, encoded_sent2], mode='mul')
+        diff_sent_rep = merge([encoded_sent1, encoded_sent2], mode=lambda l: l[0]-l[1], output_shape=lambda l:l[0])
+        # Use heuristic from Mou et al. (2015) to get final merged representation
+        merged_sent_rep = merge([concat_sent_rep, mul_sent_rep, diff_sent_rep], mode='concat')
+        # TODO: Make the number of mlp layers a hyperparameter and expose it.
+        mlp_layer1 = Dense(output_dim=mlp_size, activation=mlp_activation)
+        mlp_layer2 = Dense(output_dim=mlp_size, activation=mlp_activation)
+        softmax = Dense(output_dim=num_label_types, activation='softmax')
+        label_probs = softmax(mlp_layer2(mlp_layer1(merged_sent_rep)))
+        model = Model(input=[sent1_input_layer, sent2_input_layer], output=label_probs)
+        model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+        self.model = model
+        print >>sys.stderr, "Entailment model summary:"
+        print >>sys.stderr, model.summary()
+        best_accuracy = 0.0
+        num_worse_epochs = 0
+        for epoch_id in range(num_epochs):
+            print >>sys.stderr, "Epoch: %d" % epoch_id 
+            history = model.fit(train_inputs, train_labels, validation_split=0.1, nb_epoch=1)
+            validation_accuracy = history.history['val_acc'][0]  # history['val_acc'] is a list of size nb_epoch
+            if validation_accuracy > best_accuracy:
+                self.save_model(epoch_id)
+                self.best_epoch = epoch_id
+                num_worse_epochs = 0
+                best_accuracy = validation_accuracy
+            elif validation_accuracy < best_accuracy:
+                num_worse_epochs += 1
+                if num_worse_epochs >= patience:
+                    print >>sys.stderr, "Stopping training."
+                    break
+        self.save_best_model()
+
+    def _get_encoded_sentence_variables(self, sent1_input_layer, sent2_input_layer, dropout,
+                                        embedding_file, tune_embedding):
+        # Subclasses implement their own ways of encoding sentences.
         raise NotImplementedError
 
     @staticmethod
@@ -91,36 +149,44 @@ class EntailmentModel(object):
         predicted_labels = [rev_label_map[pred] for pred in predictions]
         return predicted_labels
 
-    def save_model(self, serialized_model_prefix):
-        self.model.save("%s.model" % serialized_model_prefix)
-        pickle.dump(self.data_processor, open("%s.dataproc" % serialized_model_prefix, "wb"))
+    def save_model(self, epoch):
+        '''
+        Saves the current model using the epoch id to identify the file.
+        '''
+        self.model.save("%s_%d.model" % (self.model_name_prefix, epoch))
+        pickle.dump(self.data_processor, open("%s.dataproc" % self.model_name_prefix, "wb"))
 
-    def load_model(self, serialized_model_prefix, custom_objects={}):
-        self.model = load_model("%s.model" % serialized_model_prefix, custom_objects=custom_objects)
-        self.data_processor = pickle.load(open("%s.dataproc" % serialized_model_prefix, "rb"))
+    def save_best_model(self):
+        '''
+        Copies the model corresponding to the best epoch as the final model file.
+        '''
+        from shutil import copyfile
+        best_model_file = "%s_%d.model" % (self.model_name_prefix, self.best_epoch)
+        final_model_file = "%s.model" % self.model_name_prefix
+        copyfile(best_model_file, final_model_file)
+
+    def load_model(self, epoch=None):
+        '''
+        Loads a saved model. If epoch id is provided, will load the corresponding model. Or else,
+        will load the best model.
+        '''
+        if not epoch:
+            self.model = load_model("%s.model" % self.model_name_prefix,
+                                    custom_objects=self.custom_objects)
+        else:
+            self.model = load_model("%s_%d.model" % (self.model_name_prefix, epoch),
+                                    custom_objects=self.custom_objects)
+        self.data_processor = pickle.load(open("%s.dataproc" % self.model_name_prefix, "rb"))
 
 
 class LSTMEntailmentModel(EntailmentModel):
-    def train(self, train_inputs, train_labels, num_epochs=20, mlp_size=1024, mlp_activation='relu',
-        dropout={"embedding": 0.5, "encoder": 0.2}, embedding_file=None, tune_embedding=True):
-        '''
-        train_inputs (list(numpy_array)): The two sentence inputs
-        train_labels (numpy_array): One-hot matrix indicating labels
-        num_epochs (int): Maximum number of epochs to run
-        mlp_size (int): Dimensionality of each layer in the MLP
-        dropout (dict(str->float)): Probabilities in Dropout layers after "embedding" and "encoder" (lstm)
-        embedding (numpy): Optional pretrained embedding
-        tune_embedding (bool): If pretrained embedding is given, tune it.
-        '''
-        rev_label_map = {ind: label for label, ind in self.label_map.items()}
-        print >>sys.stderr, "Training on pairs like:"
-        for label_ind, sent1_indices, sent2_indices in zip(train_labels, *train_inputs)[:5]:
-            sent1 = " ".join([self.data_processor.get_token_from_index(word_ind, onto_aware=False) for word_ind in sent1_indices])
-            sent2 = " ".join([self.data_processor.get_token_from_index(word_ind, onto_aware=False) for word_ind in sent2_indices])
-            sent1 = sent1.replace("NONE", "").strip()
-            sent2 = sent2.replace("NONE", "").strip()
-            label = rev_label_map[numpy.argmax(label_ind)]
-            print >>sys.stderr, label, sent1, sent2
+    def __init__(self, **kwargs):
+        super(LSTMEntailmentModel, self).__init__(**kwargs)
+        self.model_name_prefix = "lstm_ent"
+        self.custom_objects = {} 
+
+    def _get_encoded_sentence_variables(self, sent1_input_layer, sent2_input_layer, dropout,
+                                        embedding_file, tune_embedding):
         if embedding_file is None:
             if not tune_embedding:
                 print >>sys.stderr, "Pretrained embedding is not given. Setting tune_embedding to True."
@@ -129,10 +195,7 @@ class LSTMEntailmentModel(EntailmentModel):
         else:
             # Put the embedding in a list for Keras to treat it as initiali weights of the embeddign layer.
             embedding = [self.data_processor.get_embedding_matrix(embedding_file, onto_aware=False)]
-        num_label_types = train_labels.shape[1]  # train_labels is of shape (num_samples, num_label_types)
         vocab_size = self.data_processor.get_vocab_size(onto_aware=False)
-        sent1_input_layer = Input(name='sent1', shape=train_inputs[0].shape[1:], dtype='int32')
-        sent2_input_layer = Input(name='sent2', shape=train_inputs[1].shape[1:], dtype='int32')
         embedding_layer = Embedding(input_dim=vocab_size, output_dim=self.embed_dim, weights=embedding,
             trainable=tune_embedding, mask_zero=True, name="embedding")
         embedded_sent1 = embedding_layer(sent1_input_layer)
@@ -146,48 +209,24 @@ class LSTMEntailmentModel(EntailmentModel):
         if "encoder" in dropout:
             encoded_sent1 = Dropout(dropout["encoder"])(encoded_sent1)
             encoded_sent2 = Dropout(dropout["encoder"])(encoded_sent2)
-        concat_sent_rep = merge([encoded_sent1, encoded_sent2], mode='concat')
-        mul_sent_rep = merge([encoded_sent1, encoded_sent2], mode='mul')
-        diff_sent_rep = merge([encoded_sent1, encoded_sent2], mode=lambda l: l[0]-l[1], output_shape=lambda l:l[0])
-        # Use heuristic from Mou et al. (2015) to get final merged representation
-        merged_sent_rep = merge([concat_sent_rep, mul_sent_rep, diff_sent_rep], mode='concat')
-        # TODO: Make the number of mlp layers a hyperparameter and expose it.
-        mlp_layer1 = Dense(output_dim=mlp_size, activation=mlp_activation)
-        mlp_layer2 = Dense(output_dim=mlp_size, activation=mlp_activation)
-        softmax = Dense(output_dim=num_label_types, activation='softmax')
-        label_probs = softmax(mlp_layer2(mlp_layer1(merged_sent_rep)))
-        model = Model(input=[sent1_input_layer, sent2_input_layer], output=label_probs)
-        model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-        print >>sys.stderr, "Entailment model summary:"
-        print >>sys.stderr, model.summary()
-        # TODO: Proper early stopping
-        early_stopping = EarlyStopping(monitor='val_acc', patience=5)
-        model.fit(train_inputs, train_labels, validation_split=0.1, callbacks=[early_stopping],
-                  nb_epoch=num_epochs)
-        self.model = model
+        return encoded_sent1, encoded_sent2
 
 
 class OntoLSTMEntailmentModel(EntailmentModel):
-    def __init__(self, num_senses, num_hyps, **kwargs):
+    def __init__(self, num_senses, num_hyps, use_attention, **kwargs):
         super(OntoLSTMEntailmentModel, self).__init__(**kwargs)
         # Set self.data_processor again, now with the right arguments.
         self.data_processor = DataProcessor(word_syn_cutoff=num_senses, syn_path_cutoff=num_hyps)
         self.num_senses = num_senses
         self.num_hyps = num_hyps
         self.attention_model = None  # Keras model with just embedding and encoder to output attention.
+        self.use_attention = use_attention
+        self.model_name_prefix = "ontolstm_ent_att=%s_senses=%d_hyps=%d" % (str(self.use_attention),
+                                                                            self.num_senses, self.num_hyps)
+        self.custom_objects = {"OntoAttentionLSTM": OntoAttentionLSTM}
 
-    def train(self, train_inputs, train_labels, use_attention=False, num_epochs=20, mlp_size=1024,
-        mlp_activation='relu', dropout={"embedding": 0.5, "encoder": 0.2}, embedding_file=None, tune_embedding=True):
-        '''
-        train_inputs (list(numpy_array)): The two sentence inputs
-        train_labels (numpy_array): One-hot matrix indicating labels
-        use_attention (bool): Use attention in OntoLSTM
-        num_epochs (int): Maximum number of epochs to run
-        mlp_size (int): Dimensionality of each layer in the MLP
-        dropout (dict(str->float)): Probabilities in Dropout layers after "embedding" and "encoder" (lstm)
-        embedding (numpy): Optional pretrained embedding
-        tune_embedding (bool): If pretrained embedding is given, tune it.
-        '''
+    def _get_encoded_sentence_variables(self, sent1_input_layer, sent2_input_layer, dropout,
+                                        embedding_file, tune_embedding):
         if embedding_file is None:
             if not tune_embedding:
                 print >>sys.stderr, "Pretrained embedding is not given. Setting tune_embedding to True."
@@ -196,10 +235,7 @@ class OntoLSTMEntailmentModel(EntailmentModel):
         else:
             # Put the embedding in a list for Keras to treat it as initiali weights of the embeddign layer.
             embedding = [self.data_processor.get_embedding_matrix(embedding_file, onto_aware=True)]
-        num_label_types = train_labels.shape[1]  # train_labels is of shape (num_samples, num_label_types)
         vocab_size = self.data_processor.get_vocab_size(onto_aware=True)
-        sent1_input_layer = Input(name='sent1', shape=train_inputs[0].shape[1:], dtype='int32')
-        sent2_input_layer = Input(name='sent2', shape=train_inputs[1].shape[1:], dtype='int32')
         embedding_layer = Embedding(input_dim=vocab_size, output_dim=self.embed_dim, weights=embedding,
             mask_zero=True, trainable=tune_embedding)
         higher_order_embedding = TimeDistributed(TimeDistributed(embedding_layer), name="embedding")  # Input has two more dimensions than embedding expects
@@ -209,31 +245,13 @@ class OntoLSTMEntailmentModel(EntailmentModel):
             embedded_sent1 = Dropout(dropout["embedding"])(embedded_sent1)
             embedded_sent2 = Dropout(dropout["embedding"])(embedded_sent2)
         lstm = OntoAttentionLSTM(input_dim=self.embed_dim, output_dim=self.embed_dim, num_senses=self.num_senses,
-                num_hyps=self.num_hyps, use_attention=use_attention, name="encoder")
+                num_hyps=self.num_hyps, use_attention=self.use_attention, name="encoder")
         encoded_sent1 = lstm(embedded_sent1)
         encoded_sent2 = lstm(embedded_sent2)
         if "encoder" in dropout:
             encoded_sent1 = Dropout(dropout["encoder"])(encoded_sent1)
             encoded_sent2 = Dropout(dropout["encoder"])(encoded_sent2)
-        concat_sent_rep = merge([encoded_sent1, encoded_sent2], mode='concat')
-        mul_sent_rep = merge([encoded_sent1, encoded_sent2], mode='mul')
-        diff_sent_rep = merge([encoded_sent1, encoded_sent2], mode=lambda l: l[0]-l[1], output_shape=lambda l:l[0])
-        # Use heuristic from Mou et al. (2015) to get final merged representation
-        merged_sent_rep = merge([concat_sent_rep, mul_sent_rep, diff_sent_rep], mode='concat')
-        # TODO: Make the number of mlp layers a hyperparameter and expose it.
-        mlp_layer1 = Dense(output_dim=mlp_size, activation=mlp_activation)
-        mlp_layer2 = Dense(output_dim=mlp_size, activation=mlp_activation)
-        softmax = Dense(output_dim=num_label_types, activation='softmax')
-        label_probs = softmax(mlp_layer2(mlp_layer1(merged_sent_rep)))
-        model = Model(input=[sent1_input_layer, sent2_input_layer], output=label_probs)
-        model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-        print >>sys.stderr, "Entailment model summary:"
-        print >>sys.stderr, model.summary()
-        # TODO: Proper early stopping
-        early_stopping = EarlyStopping(monitor='val_acc', patience=5)
-        model.fit(train_inputs, train_labels, validation_split=0.1, callbacks=[early_stopping],
-                  nb_epoch=num_epochs)
-        self.model = model
+        return encoded_sent1, encoded_sent2
         
     def get_attention(self, inputs):
         # Takes inputs and returns pairs of synsets and corresponding attention values.
@@ -329,10 +347,7 @@ def main():
     args = argparser.parse_args()
     if args.onto_aware:
         entailment_model = OntoLSTMEntailmentModel(num_senses=args.num_senses, num_hyps=args.num_hyps,
-            embed_dim=args.embed_dim)
-        model_name_prefix = "ontolstm_ent_att=%s_senses=%d_hyps=%d"%(str(args.use_attention), args.num_senses,
-            args.num_hyps)
-        custom_objects = {"OntoAttentionLSTM": OntoAttentionLSTM}
+            use_attention=args.use_attention, embed_dim=args.embed_dim)
     else:
         entailment_model = LSTMEntailmentModel(embed_dim=args.embed_dim)
         model_name_prefix = "lstm_ent"
@@ -346,13 +361,15 @@ def main():
         dropout = {"embedding": args.embedding_dropout, "encoder": args.encoder_dropout}
         if args.onto_aware:
             entailment_model.train(train_inputs, train_labels, use_attention=args.use_attention,
-                num_epochs=args.num_epochs, mlp_size=args.mlp_size, mlp_activation=args.mlp_activation,
-                dropout=dropout,embedding_file=args.embedding_file, tune_embedding=args.tune_embedding)
+                                   num_epochs=args.num_epochs, mlp_size=args.mlp_size,
+                                   mlp_activation=args.mlp_activation, dropout=dropout,
+                                   embedding_file=args.embedding_file, tune_embedding=args.tune_embedding)
         else:
             # Same as above, except no attention.
-            entailment_model.train(train_inputs, train_labels, num_epochs=args.num_epochs, mlp_size=args.mlp_size,
-                mlp_activation=args.mlp_activation, dropout=dropout,embedding_file=args.embedding_file,
-                tune_embedding=args.tune_embedding)
+            entailment_model.train(train_inputs, train_labels, num_epochs=args.num_epochs,
+                                   mlp_size=args.mlp_size, mlp_activation=args.mlp_activation,
+                                   dropout=dropout, embedding_file=args.embedding_file, 
+                                   tune_embedding=args.tune_embedding)
     
     ## Test model
     if args.test_file is not None:

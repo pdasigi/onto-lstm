@@ -3,7 +3,7 @@ import warnings
 from keras.layers import LSTM
 from keras.engine import InputSpec
 from keras import backend as K
-#from keras_extensions import rnn
+from keras_extensions import changing_ndim_rnn
 
 class OntoAttentionLSTM(LSTM):
     '''
@@ -79,9 +79,12 @@ class OntoAttentionLSTM(LSTM):
 
     def _step(self, x_onto_aware, states):
         h_tm1 = states[0]
+        mask_i = states[-1]
+        lstm_states = states[:-1]
 
         # Before the step function is called, the original input is dimshuffled to have (time, samples, senses, hyps, concept_dim)
-        # So shape of x_cs is (samples, senses, hyps, concept_dim)
+        # So shape of x_onto_aware is (samples, senses, hyps, concept_dim + 1) if the input was masked.
+        # Or else, it is (samples, senses, hyps, concept_dim)
         # TODO: Better definition of attention, and attention weight regularization
         if self.use_attention:
             # Sense attention
@@ -91,7 +94,6 @@ class OntoAttentionLSTM(LSTM):
             # TODO: Expose attention activation
             sense_projection = K.sigmoid(input_sense_projection + K.expand_dims(context_sense_projection, dim=1))  # (samples, senses, proj_dim)
             sense_scores = K.dot(sense_projection, self.sense_scorer)  # (samples, senses)
-            #sense_attention = K.softmax(sense_scores) # (samples, senses)
 
             # Generalization attention
             input_hyp_projection = K.dot(x_onto_aware, self.input_hyp_projector) # (samples, senses, hyps, proj_dim)
@@ -101,34 +103,35 @@ class OntoAttentionLSTM(LSTM):
                                                             dim=1)  #(samples, 1, 1, proj_dim)
             hyp_projection = K.sigmoid(input_hyp_projection + context_hyp_projection_expanded) # (samples, senses, hyps, proj_dim)
             hyp_scores = K.dot(hyp_projection, self.hyp_scorer) # (samples, senses, hyps)
-            # Now we need to compute softmax of gen_scores. But we need to reshape it first since we
-            # cannot perform softmax on tensors. We need \sum_{senses} \sum_{hyps} gen_att[i] = 1.0,
-            # for each sample i.
-            #hyp_scores_shape = K.shape(hyp_scores)
-            #flat_hyp_scores = K.batch_flatten(hyp_scores)  # (samples, senses * hyps)
-            #hyp_attention = K.reshape(K.softmax(flat_hyp_scores), hyp_scores_shape)  # (samples, senses, hyps)
-            # (samples, senses, hyps) * (samples, senses, 1)
-            #sense_hyp_attention = (hyp_attention * K.expand_dims(sense_attention))  # (samples, senses, hyps)
-
             # Multiply hyp and sense scores and then normalize. Attention values now sum to 1.
             sense_hyp_scores = (hyp_scores * K.expand_dims(sense_scores))  # (samples, senses, hyps)
-            scores_shape = K.shape(sense_hyp_scores)
-            # We need to flatten this because we cannot perform softmax on tensors.
-            flattened_scores = K.batch_flatten(sense_hyp_scores)  # (samples, senses*hyps)
-            sense_hyp_attention = K.reshape(K.softmax(flattened_scores), scores_shape)  # (samples, senses, hyps)
-            weighted_product = x_onto_aware * K.expand_dims(sense_hyp_attention)  # (samples, senses, hyps, input_dim)
-            # Weighted average, summing over senses and hyps
-            lstm_input_t = K.sum(weighted_product, axis=(1,2))  # (samples, input_dim)
         else:
-            sense_hyp_attention = K.sum(K.zeros_like(x_onto_aware), axis=-1)  # matrix of zeros for attention to be consistent (samples, senses, hyps)
-            lstm_input_t = K.mean(x_onto_aware, axis=(1,2))  # shape of x is (samples, concept_dim)
+            # matrix of ones for scores to be consistent (samples, senses, hyps)
+            sense_hyp_scores = K.ones_like(x_onto_aware)[:, :, :, 0]
+
+        scores_shape = K.shape(sense_hyp_scores)
+        # We need to flatten this because we cannot perform softmax on tensors.
+        if mask_i is not None:
+            # Applying mask to the scores to make scores of all masked elements 0.
+            zeros_like_scores = K.zeros_like(sense_hyp_scores)
+            scores_mask = K.squeeze(mask_i, axis=-1)  # (samples, senses, hyps)
+            sense_hyp_scores = K.switch(scores_mask, sense_hyp_scores, zeros_like_scores)  # (samples, sense, hyps)
+            # Applying the mask on input
+            zeros_like_input = K.zeros_like(x_onto_aware)  # (samples, senses, hyps, dim)
+            x_onto_aware = K.switch(mask_i, x_onto_aware, zeros_like_input) 
+            
+        flattened_scores = K.batch_flatten(sense_hyp_scores)  # (samples, senses*hyps)
+        sense_hyp_attention = K.reshape(K.softmax(flattened_scores), scores_shape)  # (samples, senses, hyps)
+        weighted_product = x_onto_aware * K.expand_dims(sense_hyp_attention)  # (samples, senses, hyps, input_dim)
+        # Weighted average, summing over senses and hyps
+        lstm_input_t = K.sum(weighted_product, axis=(1,2))  # (samples, input_dim)
         # Now pass the computed lstm_input to LSTM's step function to get current h and c.
-        h, [_, c] = super(OntoAttentionLSTM, self).step(lstm_input_t, states)
+        h, [_, c] = super(OntoAttentionLSTM, self).step(lstm_input_t, lstm_states)
         
         return h, c, sense_hyp_attention
         
-    def step(self, x_cs, states):
-        h, c, att = self._step(x_cs, states)
+    def step(self, x, states):
+        h, c, att = self._step(x, states)
         if self.return_attention:
             return att, [h, c]
         else:
@@ -137,17 +140,62 @@ class OntoAttentionLSTM(LSTM):
     def get_constants(self, x):
         # Reimplementing because ndim of x is 5. (samples, timesteps, num_senses, num_hyps, input_dim)
         sense_hyp_stripped_x = x[:, :, 0, 0, :]  # (samples, timesteps, input_dim), just like LSTM input.
-        # We need the same constants as regular LSTM
-        return super(OntoAttentionLSTM, self).get_constants(sense_hyp_stripped_x)
+        # We need the same constants as regular LSTM.
+        lstm_constants = super(OntoAttentionLSTM, self).get_constants(sense_hyp_stripped_x)
+        return lstm_constants
     
-    # redefining compute mask because the input ndim is different from the output ndim, and 
-    # this needs to be handled.
     def compute_mask(self, input, mask):
+        # redefining compute mask because the input ndim is different from the output ndim, and 
+        # this needs to be handled.
         if self.return_sequences and mask is not None:
             # Get rid of syn and hyp dimensions for computing loss
-            return mask.sum(axis=(-2, -1))
+            return K.sum(mask, axis=(-3, -2))
         else:
             return None
+    """
+    def preprocess_input(self, x):
+        # We want to pass the mask along with x such that the step function has access to the mask.
+        # We do that by concatenating the mask to the input. The step function is responsible for 
+        # unpacking them to get the mask for a given timestep.
+        if self.onto_aware_mask is not None:
+            # (samples, length, senses, hyps, input_dim+1)
+            processed_x = K.concatenate([K.expand_dims(self.onto_aware_mask), x])
+        else:
+            processed_x = x
+        return processed_x
+    """
+
+    def call(self, x, mask=None):
+        # Overriding call to make a call to our own rnn instead of the inbuilt rnn.
+        # Keras assumes we won't need access to the mask in the step function. But we do, for properly 
+        # averaging x (while ignoring masked parts). Moreover, since input's ndim is not the same as 
+        # output's ndim, we'll need to process the mask within rnn to define a separate output mask.
+        # See the definition of changing_ndim_rnn for more details.
+        input_shape = self.input_spec[0].shape
+        if self.stateful:
+            initial_states = self.states
+        else:
+            initial_states = self.get_initial_states(x)
+        constants = self.get_constants(x)
+        preprocessed_input = self.preprocess_input(x)
+
+        last_output, outputs, states = changing_ndim_rnn(self.step, preprocessed_input,
+                                                         initial_states,
+                                                         go_backwards=self.go_backwards,
+                                                         mask=mask,
+                                                         constants=constants,
+                                                         unroll=self.unroll,
+                                                         input_length=input_shape[1],
+                                                         eliminate_mask_dims=(1, 2))
+        if self.stateful:
+            self.updates = []
+            for i in range(len(states)):
+                self.updates.append((self.states[i], states[i]))
+
+        if self.return_sequences:
+            return outputs
+        else:
+            return last_output
 
     def get_config(self):
         config = {"num_senses": self.num_senses,

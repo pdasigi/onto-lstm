@@ -6,8 +6,9 @@ import codecs
 import numpy
 
 from keras.models import Model, load_model
-from keras.layers import Dense, Dropout, Embedding, Input, LSTM, merge, TimeDistributed
+from keras.layers import Dense, Dropout, Embedding, Input, LSTM, merge
 
+from embedding import AnyShapeEmbedding
 from index_data import DataProcessor
 from onto_attention import OntoAttentionLSTM
 
@@ -60,7 +61,7 @@ class EntailmentModel(object):
         model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
         self.model = model
         print >>sys.stderr, "Entailment model summary:"
-        print >>sys.stderr, model.summary()
+        model.summary()
         best_accuracy = 0.0
         num_worse_epochs = 0
         for epoch_id in range(num_epochs):
@@ -233,14 +234,13 @@ class OntoLSTMEntailmentModel(EntailmentModel):
                 tune_embedding = True
             embedding = None
         else:
-            # Put the embedding in a list for Keras to treat it as initiali weights of the embeddign layer.
+            # Put the embedding in a list for Keras to treat it as initial weights of the embedding layer.
             embedding = [self.data_processor.get_embedding_matrix(embedding_file, onto_aware=True)]
         vocab_size = self.data_processor.get_vocab_size(onto_aware=True)
-        embedding_layer = Embedding(input_dim=vocab_size, output_dim=self.embed_dim, weights=embedding,
-            mask_zero=True, trainable=tune_embedding)
-        higher_order_embedding = TimeDistributed(TimeDistributed(embedding_layer), name="embedding")  # Input has two more dimensions than embedding expects
-        embedded_sent1 = higher_order_embedding(sent1_input_layer)
-        embedded_sent2 = higher_order_embedding(sent2_input_layer)
+        embedding_layer = AnyShapeEmbedding(input_dim=vocab_size, output_dim=self.embed_dim, weights=embedding,
+            mask_zero=True, trainable=tune_embedding, name="embedding")
+        embedded_sent1 = embedding_layer(sent1_input_layer)
+        embedded_sent2 = embedding_layer(sent2_input_layer)
         if "embedding" in dropout:
             embedded_sent1 = Dropout(dropout["embedding"])(embedded_sent1)
             embedded_sent2 = Dropout(dropout["embedding"])(embedded_sent2)
@@ -284,30 +284,30 @@ class OntoLSTMEntailmentModel(EntailmentModel):
         # Take necessary parts out of the entailment model to get OntoLSTM attention.
         if not self.model:
             raise RuntimeError, "Model not trained yet!"
-        input_layer = None
+        # We need just one input to get attention. input_shape_at(0) gives a list with two shapes.
+        input_shape = self.model.get_input_shape_at(0)[0]
+        input_layer = Input(input_shape[1:])  # removing batch size
         embedding_layer = None
         encoder_layer = None
-        # We need just one input to get attention.
         for layer in self.model.layers:
-            if layer.name == "sent1":
-                input_layer = layer
-            elif layer.name == "embedding":
+            if layer.name == "embedding":
                 embedding_layer = layer
             elif layer.name == "encoder":
                 # We need to redefine the OntoLSTM layer with the learned weights and set return attention to True.
                 # Assuming we'll want attention values for all words (return_sequences = True)
-                encoder_layer = OntoAttentionLSTM(input_dim=self.embed_dim, output_dim=self.embed_dim,
-                        num_senses=self.num_senses, num_hyps=self.num_hyps, use_attention=True,
-                        return_attention=True, return_sequences=True, weights=layer.get_weights())
-        if not input_layer or not embedding_layer or not encoder_layer:
+                encoder_layer = OntoAttentionLSTM(input_dim=self.embed_dim,
+                                                  output_dim=self.embed_dim, num_senses=self.num_senses,
+                                                  num_hyps=self.num_hyps, use_attention=True,
+                                                  return_attention=True, return_sequences=True,
+                                                  weights=layer.get_weights())
+        if not embedding_layer or not encoder_layer:
             raise RuntimeError, "Required layers not found!"
         attention_output = encoder_layer(embedding_layer(input_layer))
         self.attention_model = Model(input=input_layer, output=attention_output)
         self.attention_model.compile(loss="mse", optimizer="sgd")  # Loss and optimizer do not matter!
 
-    def print_attention_values(self, input_file, output_file):
+    def print_attention_values(self, input_file, test_inputs, output_file):
         onto_aware = True
-        test_inputs, _ = self.process_test_data(input_file, onto_aware)
         sent1_attention_outputs = self.get_attention(test_inputs[0])
         sent2_attention_outputs = self.get_attention(test_inputs[1])
         tagged_sentences = [x.strip().split("\t")[1] for x in codecs.open(input_file).readlines()]
@@ -350,12 +350,10 @@ def main():
             use_attention=args.use_attention, embed_dim=args.embed_dim)
     else:
         entailment_model = LSTMEntailmentModel(embed_dim=args.embed_dim)
-        model_name_prefix = "lstm_ent"
-        custom_objects = {}
 
     ## Train model or load trained model
     if args.train_file is None:
-        entailment_model.load_model(model_name_prefix, custom_objects=custom_objects)
+        entailment_model.load_model()
     else:
         train_inputs, train_labels = entailment_model.process_train_data(args.train_file, onto_aware=args.onto_aware)
         dropout = {"embedding": args.embedding_dropout, "encoder": args.encoder_dropout}
@@ -376,7 +374,7 @@ def main():
         test_inputs, test_labels = entailment_model.process_test_data(args.test_file, onto_aware=args.onto_aware)
         test_predictions = entailment_model.test(test_inputs, test_labels)
         if args.attention_output is not None:
-            entailment_model.print_attention_values(args.test_file, args.attention_output)
+            entailment_model.print_attention_values(args.test_file, test_inputs, args.attention_output)
 
 if __name__ == "__main__":
     main()

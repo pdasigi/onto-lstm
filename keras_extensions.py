@@ -5,22 +5,11 @@ from keras.layers import Embedding
 from theano import tensor as T
 import theano
 
-def expand_dims(x, dim=-1):
-    '''Add a 1-sized dimension at index "dim".
-    '''
-    pattern = [i for i in range(x.type.ndim)]
-    if dim < 0:
-        if x.type.ndim == 0:
-            dim = 0
-        else:
-            dim = dim % x.type.ndim + 1
-    pattern.insert(dim, 'x')
-    return x.dimshuffle(pattern)
-
-def rnn(step_function, inputs, initial_states,
-        go_backwards=False, mask=None, constants=None,
-        unroll=False, input_length=None, eliminate_mask_dims=None):
-    '''Iterates over the time dimension of a tensor.
+def changing_ndim_rnn(step_function, inputs, initial_states,
+                      go_backwards=False, mask=None, constants=None,
+                      unroll=False, input_length=None, eliminate_mask_dims=None):
+    '''Variant of Keras' rnn that allows input's ndim being different from output's
+       ndim.
 
     # Arguments
         inputs: tensor of temporal data of shape (samples, time, ...)
@@ -45,6 +34,8 @@ def rnn(step_function, inputs, initial_states,
         constants: a list of constant values passed at each step.
         unroll: whether to unroll the RNN or to use a symbolic loop (`scan`).
         input_length: must be specified if using `unroll`.
+        eliminate_mask_dims: list of dimension indices that will be eliminated from the mask
+                             before applying it to the output.
 
     # Returns
         A tuple (last_output, outputs, new_states).
@@ -66,14 +57,14 @@ def rnn(step_function, inputs, initial_states,
     axes = [1, 0] + list(range(2, ndim))
     inputs = inputs.dimshuffle(axes)
 
+    if constants is None:
+        constants = []
+
     if mask is not None:
         if mask.ndim == ndim-1:
-            mask = expand_dims(mask)
+            mask = K.expand_dims(mask)
         assert mask.ndim == ndim
-        #mask_axes = [1, 0] + list(range(2,mask.ndim))
         mask = mask.dimshuffle(axes)
-        if constants is None:
-            constants = []
 
         if unroll:
             indices = list(range(input_length))
@@ -84,17 +75,21 @@ def rnn(step_function, inputs, initial_states,
             successive_states = []
             states = initial_states
             for i in indices:
-                output, new_states = step_function(inputs[i], states)
+                output, new_states = step_function(inputs[i], states + constants + [mask[i]])
 
                 if len(successive_outputs) == 0:
-                    prev_output = zeros_like(output)
+                    prev_output = K.zeros_like(output)
                 else:
                     prev_output = successive_outputs[-1]
 
-                output = T.switch(mask[i], output, prev_output)
+                if eliminate_mask_dims is not None:
+                    output_mask = K.sum(mask[i], axis=eliminate_mask_dims)
+                else:
+                    output_mask = mask
+                output = T.switch(output_mask, output, prev_output)
                 kept_states = []
                 for state, new_state in zip(states, new_states):
-                    kept_states.append(T.switch(mask[i], new_state, state))
+                    kept_states.append(T.switch(output_mask, new_state, state))
                 states = kept_states
 
                 successive_outputs.append(output)
@@ -105,21 +100,22 @@ def rnn(step_function, inputs, initial_states,
             for i in range(len(successive_states[-1])):
                 states.append(T.stack(*[states_at_step[i] for states_at_step in successive_states]))
         else:
-            # Replacing parts of inputs with zeros for the rest of the computation as per mask
-            inputs = T.switch(mask, inputs, T.zeros_like(inputs))
             # build an all-zero tensor of shape (samples, output_dim)
-            initial_output = step_function(inputs[0], initial_states + constants)[0] * 0
+            initial_output = T.zeros_like(step_function(inputs[0], initial_states + constants + [mask[0]])[0])
             # Theano gets confused by broadcasting patterns in the scan op
             initial_output = T.unbroadcast(initial_output, 0, 1)
-            if eliminate_mask_dims is not None:
-                mask = mask.sum(axis=eliminate_mask_dims)
+
             def _step(input, mask, output_tm1, *states):
-                output, new_states = step_function(input, states)
+                output, new_states = step_function(input, states + (mask,))
+                if eliminate_mask_dims is not None:
+                    output_mask = K.sum(mask, axis=eliminate_mask_dims)
+                else:
+                    output_mask = mask
                 # output previous output if masked.
-                output = T.switch(mask, output, output_tm1)
+                output = T.switch(output_mask, output, output_tm1)
                 return_states = []
                 for state, new_state in zip(states, new_states):
-                    return_states.append(T.switch(mask, new_state, state))
+                    return_states.append(T.switch(output_mask, new_state, state))
                 return [output] + return_states
 
             results, _ = theano.scan(
@@ -181,20 +177,3 @@ def rnn(step_function, inputs, initial_states,
     outputs = outputs.dimshuffle(axes)
     states = [T.squeeze(state[-1]) for state in states]
     return last_output, outputs, states
-
-class HigherOrderEmbedding(Embedding):
-    '''Turn positive integer index tensors into higher order tensors of fixed size.
-    Extenstion of Embedding layer in Keras to arbitrary dimensions.
-    eg. [[[4, 5]], [[20, 4]]] -> [[[0.25, 0.1], [-0.62, 0.9]], [[0.6, -0.2], [0.25, 0.1]]]
-
-    This layer can only be used as the first layer in a model.
-
-    # Input shape
-        nD tensor with shape: `(nb_samples, ...)`.
-
-    # Output shape
-        (n+1)D tensor with shape: `(nb_samples, ..., output_dim)`.
-
-    '''
-    def get_output_shape_for(self, input_shape):
-        return input_shape + (self.output_dim,)

@@ -161,10 +161,10 @@ class DataProcessor(object):
                 return struct[-limit:]
         if onto_aware:
             sent_limits = [sentlenlimit, self.word_syn_cutoff, self.syn_path_cutoff]
-            sent_padding = [[0]]
+            sent_padding = [[self.synset_index["NONE"]]]
         else:
             sent_limits = [sentlenlimit]
-            sent_padding = 0
+            sent_padding = self.word_index["NONE"]
         # We do not need to pad at the sentence level. That is, we don't have a fixed num of sentences.
         # So, we loop over sentences.
         padded_input = [_pad_struct(word_indices, sent_limits, sent_padding) for word_indices in input_indices]

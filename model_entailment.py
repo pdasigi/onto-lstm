@@ -8,7 +8,7 @@ import numpy
 from keras.models import Model, load_model
 from keras.layers import Dense, Dropout, Embedding, Input, LSTM, merge
 
-from embedding import AnyShapeEmbedding
+from embedding import OntoAwareEmbedding
 from index_data import DataProcessor
 from onto_attention import OntoAttentionLSTM
 
@@ -228,16 +228,20 @@ class OntoLSTMEntailmentModel(EntailmentModel):
 
     def _get_encoded_sentence_variables(self, sent1_input_layer, sent2_input_layer, dropout,
                                         embedding_file, tune_embedding):
+        word_vocab_size = self.data_processor.get_vocab_size(onto_aware=False)
+        synset_vocab_size = self.data_processor.get_vocab_size(onto_aware=True)
         if embedding_file is None:
             if not tune_embedding:
                 print >>sys.stderr, "Pretrained embedding is not given. Setting tune_embedding to True."
                 tune_embedding = True
             embedding = None
         else:
+            # TODO: Other sources for prior initialization
+            initial_sense_prior_parameters = numpy.random.uniform(low=0.0, high=0.5, size=(word_vocab_size, 1))
             # Put the embedding in a list for Keras to treat it as initial weights of the embedding layer.
-            embedding = [self.data_processor.get_embedding_matrix(embedding_file, onto_aware=True)]
-        vocab_size = self.data_processor.get_vocab_size(onto_aware=True)
-        embedding_layer = AnyShapeEmbedding(input_dim=vocab_size, output_dim=self.embed_dim, weights=embedding,
+            embedding = [self.data_processor.get_embedding_matrix(embedding_file, onto_aware=True),
+                         initial_sense_prior_parameters]
+        embedding_layer = OntoAwareEmbedding(word_vocab_size, synset_vocab_size, self.embed_dim, weights=embedding,
             mask_zero=True, trainable=tune_embedding, name="embedding")
         embedded_sent1 = embedding_layer(sent1_input_layer)
         embedded_sent2 = embedding_layer(sent2_input_layer)

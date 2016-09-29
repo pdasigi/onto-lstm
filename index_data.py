@@ -102,10 +102,21 @@ class DataProcessor(object):
 
     # TODO: Separate methods for returning word inds and conc inds
     def index_sentence(self, words, pos_tags, for_test, remove_singletons, onto_aware):
+        # We need word_inds whether onto_aware is true or false
+        word_inds = []
+        for word in words:
+            if word not in self.word_index and not for_test:
+                if remove_singletons and word in self.word_singletons:
+                    self.word_index[word] = self.word_index['UNK']
+                else:
+                    self.word_index[word] = len(self.word_index)
+            word_ind = self.word_index[word] if word in self.word_index else self.word_index['UNK']
+            word_inds.append(word_ind)
+
         if onto_aware:
             sentence_hyps = self.get_hypernyms_sentence(words, pos_tags)
             conc_inds = []
-            for word_hyps in sentence_hyps:
+            for word_ind, word_hyps in zip(word_inds, sentence_hyps):
                 word_conc_inds = []
                 for sense_syns in word_hyps:
                     word_sense_conc_inds = []
@@ -118,19 +129,13 @@ class DataProcessor(object):
                                 self.synset_index[syn] = len(self.synset_index)
                         conc_ind = self.synset_index[syn] if syn in self.synset_index else self.synset_index['UNK']
                         word_sense_conc_inds.append(conc_ind)
+                    # After the index of the most specific concept, add the index of the word.
+                    # OntoAwareEmbedding is responsible for separating this out and using it to define a sense prior.
+                    word_sense_conc_inds.append(word_ind)
                     word_conc_inds.append(word_sense_conc_inds)
                 conc_inds.append(word_conc_inds)
             return conc_inds
         else:
-            word_inds = []
-            for word in words:
-                if word not in self.word_index and not for_test:
-                    if remove_singletons and word in self.word_singletons:
-                        self.word_index[word] = self.word_index['UNK']
-                    else:
-                        self.word_index[word] = len(self.word_index)
-                word_ind = self.word_index[word] if word in self.word_index else self.word_index['UNK']
-                word_inds.append(word_ind)
             return word_inds
 
     def pad_input(self, input_indices, onto_aware, sentlenlimit):
@@ -160,7 +165,8 @@ class DataProcessor(object):
                 # If the input is already longer than limit, prune it.
                 return struct[-limit:]
         if onto_aware:
-            sent_limits = [sentlenlimit, self.word_syn_cutoff, self.syn_path_cutoff]
+            # +1 for syn_path_cutoff because we are adding the word index at the end
+            sent_limits = [sentlenlimit, self.word_syn_cutoff, self.syn_path_cutoff + 1]
             sent_padding = [[self.synset_index["NONE"]]]
         else:
             sent_limits = [sentlenlimit]

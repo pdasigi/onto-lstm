@@ -34,13 +34,13 @@ class OntoAttentionLSTM(LSTM):
 
     def build(self, input_shape):
         self.input_spec = [InputSpec(shape=input_shape)]
-        input_dim = input_shape[4]
+        input_dim = input_shape[4] - 1  # ignore sense prior parameter
         self.input_dim = input_dim
         # Saving onto-lstm weights to set them later. This way, LSTM's build method won't 
         # delete them.
         initial_ontolstm_weights = self.initial_weights
         self.initial_weights = None
-        lstm_input_shape = input_shape[:2] + (input_shape[4],) # removing senses and hyps
+        lstm_input_shape = input_shape[:2] + (input_dim,) # removing senses and hyps
         # Now calling LSTM's build to initialize the LSTM weights
         super(OntoAttentionLSTM, self).build(lstm_input_shape)
         # This would have changed the input shape and ndim. Reset it again.
@@ -48,14 +48,6 @@ class OntoAttentionLSTM(LSTM):
 
         if self.use_attention:
             # Following are the attention parameters
-            # Sense projection and scoring
-            self.input_sense_projector = self.inner_init((input_dim, self.output_dim), 
-                name='{}_input_sense_projector'.format(self.name)) # Projection operator for synsets
-            self.context_sense_projector = self.inner_init((self.output_dim, self.output_dim),
-                name='{}_context_sense_projector'.format(self.name)) # Projection operator for hidden state (context)
-            self.sense_scorer = self.init((self.output_dim,), name='{}_sense_scorer'.format(self.name))
-
-            # Generalization projection and scoring
             self.input_hyp_projector = self.inner_init((input_dim, self.output_dim),
                 name='{}_input_hyp_projector'.format(self.name)) # Projection operator for synsets
             self.context_hyp_projector = self.inner_init((self.output_dim, self.output_dim),
@@ -63,8 +55,7 @@ class OntoAttentionLSTM(LSTM):
             self.hyp_scorer = self.init((self.output_dim,), name='{}_hyp_scorer'.format(self.name))
 
             # LSTM's build method would have initialized trainable_weights. Add to it.
-            self.trainable_weights.extend([self.input_sense_projector, self.context_sense_projector,
-                                           self.sense_scorer, self.input_hyp_projector, 
+            self.trainable_weights.extend([self.input_hyp_projector,
                                            self.context_hyp_projector, self.hyp_scorer])
 
         if initial_ontolstm_weights is not None:
@@ -72,57 +63,67 @@ class OntoAttentionLSTM(LSTM):
             del initial_ontolstm_weights
 
     def get_initial_states(self, x):
-        # Reimplementing because ndim of x is 5. (samples, timesteps, num_senses, num_hyps, input_dim)
-        sense_hyp_stripped_x = x[:, :, 0, 0, :]  # (samples, timesteps, input_dim), just like LSTM input.
+        # Reimplementing because ndim of x is 5. (samples, timesteps, num_senses, num_hyps, embedding_dim)
+        sense_hyp_stripped_x = x[:, :, 0, 0, :-1]  # (samples, timesteps, input_dim), just like LSTM input.
         # We need the same initial states as regular LSTM
         return super(OntoAttentionLSTM, self).get_initial_states(sense_hyp_stripped_x)
 
     def _step(self, x_onto_aware, states):
         h_tm1 = states[0]
-        mask_i = states[-1]
+        mask_i = states[-1]  # (samples, senses, hyps, 1)
         lstm_states = states[:-1]
 
         # Before the step function is called, the original input is dimshuffled to have (time, samples, senses, hyps, concept_dim)
-        # So shape of x_onto_aware is (samples, senses, hyps, concept_dim + 1) if the input was masked.
-        # Or else, it is (samples, senses, hyps, concept_dim)
-        # TODO: Better definition of attention, and attention weight regularization
+        # So shape of x_onto_aware is (samples, senses, hyps, concept_dim + 1), +1 for sense prior parameter
+        # TODO: Use sense priors even when not using attention?
+        x_synset_embeddings = x_onto_aware[:,:,:,:-1]  # (samples, senses, hyps, embedding_dim) 
         if self.use_attention:
             # Sense attention
-            x_hyp_averaged = K.mean(x_onto_aware, axis=2)  # (samples, sense, input_dim)
-            input_sense_projection = K.dot(x_hyp_averaged, self.input_sense_projector)  # (samples, senses, proj_dim)
-            context_sense_projection = K.dot(h_tm1, self.context_sense_projector) # (samples, proj_dim)
-            # TODO: Expose attention activation
-            sense_projection = K.sigmoid(input_sense_projection + K.expand_dims(context_sense_projection, dim=1))  # (samples, senses, proj_dim)
-            sense_scores = K.dot(sense_projection, self.sense_scorer)  # (samples, senses)
-
+            # Taking only the last dimension from all samples. These are the lambda values of exp distributions.
+            sense_parameters = K.expand_dims(x_onto_aware[:, 0, 0, -1])  # (samples,1)
+            # (1, num_senses)
+            sense_indices = K.cast_to_floatx([[ind for ind in range(self.num_senses)]])
+            # (samples, num_senses)
+            expanded_sense_indices = K.dot(K.ones_like(sense_parameters), sense_indices)
+            # Getting the sense probabilities from the exponential distribution. p(x) = \lambda * e^(-\lambda * x)
+            sense_scores = sense_parameters * K.exp(-sense_parameters * expanded_sense_indices)  # (samples, num_senses)
+            # Renormalizing sense scores to make \sum_{num_senses} p(sense | word) = 1
+            if mask_i is not None:
+                sense_mask = K.sum(K.squeeze(mask_i, axis=-1), axis=2)  # (samples, sense)
+                sense_scores = K.switch(sense_mask, sense_scores, K.zeros_like(sense_scores))
+            sense_probabilities = sense_scores / K.expand_dims(K.sum(sense_scores, axis=1) + K.epsilon())  # (samples, num_senses)
+             
             # Generalization attention
-            input_hyp_projection = K.dot(x_onto_aware, self.input_hyp_projector) # (samples, senses, hyps, proj_dim)
+            input_hyp_projection = K.dot(x_synset_embeddings, self.input_hyp_projector) # (samples, senses, hyps, proj_dim)
             context_hyp_projection = K.dot(h_tm1, self.context_hyp_projector) # (samples, proj_dim)
             context_hyp_projection_expanded = K.expand_dims(K.expand_dims(context_hyp_projection,
                                                                           dim=1),
                                                             dim=1)  #(samples, 1, 1, proj_dim)
             hyp_projection = K.sigmoid(input_hyp_projection + context_hyp_projection_expanded) # (samples, senses, hyps, proj_dim)
             hyp_scores = K.dot(hyp_projection, self.hyp_scorer) # (samples, senses, hyps)
-            # Multiply hyp and sense scores and then normalize. Attention values now sum to 1.
-            sense_hyp_scores = (hyp_scores * K.expand_dims(sense_scores))  # (samples, senses, hyps)
+            if mask_i is not None:
+                hyp_scores = K.switch(K.squeeze(mask_i, axis=-1), hyp_scores, K.zeros_like(hyp_scores))
+            scores_shape = K.shape(hyp_scores)
+            # We need to flatten this because we cannot perform softmax on tensors.
+            flattened_scores = K.batch_flatten(hyp_scores)  # (samples, senses*hyps)
+            hyp_attention = K.reshape(K.softmax(flattened_scores), scores_shape)  # (samples, senses, hyps)
+            # Renormalizing hyp attention to get p(hyp | sense, word)
+            hyp_given_sense_attention = hyp_attention / K.expand_dims(K.expand_dims(K.sum(hyp_attention, axis=(1,2)) + K.epsilon()))
+            # Multiply P(hyp | sense, word) and p(sense|word) . Attention values now sum to 1.
+            sense_hyp_attention = hyp_given_sense_attention * K.expand_dims(sense_probabilities)
         else:
             # matrix of ones for scores to be consistent (samples, senses, hyps)
-            sense_hyp_scores = K.ones_like(x_onto_aware)[:, :, :, 0]
+            sense_hyp_scores = K.ones_like(x_synset_embeddings)[:, :, :, 0]
+            if mask_i is not None:
+                sense_hyp_scores = K.switch(K.squeeze(mask_i, axis=-1), sense_hyp_scores, K.zeros_like(sense_hyp_scores))
+            sense_hyp_attention = sense_hyp_scores / K.expand_dims(K.expand_dims(K.sum(sense_hyp_scores, axis=(1,2))))
 
-        scores_shape = K.shape(sense_hyp_scores)
-        # We need to flatten this because we cannot perform softmax on tensors.
         if mask_i is not None:
-            # Applying mask to the scores to make scores of all masked elements 0.
-            zeros_like_scores = K.zeros_like(sense_hyp_scores)
-            scores_mask = K.squeeze(mask_i, axis=-1)  # (samples, senses, hyps)
-            sense_hyp_scores = K.switch(scores_mask, sense_hyp_scores, zeros_like_scores)  # (samples, sense, hyps)
             # Applying the mask on input
-            zeros_like_input = K.zeros_like(x_onto_aware)  # (samples, senses, hyps, dim)
-            x_onto_aware = K.switch(mask_i, x_onto_aware, zeros_like_input) 
+            zeros_like_input = K.zeros_like(x_synset_embeddings)  # (samples, senses, hyps, dim)
+            x_synset_embeddings = K.switch(mask_i, x_synset_embeddings, zeros_like_input) 
             
-        flattened_scores = K.batch_flatten(sense_hyp_scores)  # (samples, senses*hyps)
-        sense_hyp_attention = K.reshape(K.softmax(flattened_scores), scores_shape)  # (samples, senses, hyps)
-        weighted_product = x_onto_aware * K.expand_dims(sense_hyp_attention)  # (samples, senses, hyps, input_dim)
+        weighted_product = x_synset_embeddings * K.expand_dims(sense_hyp_attention)  # (samples, senses, hyps, input_dim)
         # Weighted average, summing over senses and hyps
         lstm_input_t = K.sum(weighted_product, axis=(1,2))  # (samples, input_dim)
         # Now pass the computed lstm_input to LSTM's step function to get current h and c.
@@ -139,7 +140,7 @@ class OntoAttentionLSTM(LSTM):
 
     def get_constants(self, x):
         # Reimplementing because ndim of x is 5. (samples, timesteps, num_senses, num_hyps, input_dim)
-        sense_hyp_stripped_x = x[:, :, 0, 0, :]  # (samples, timesteps, input_dim), just like LSTM input.
+        sense_hyp_stripped_x = x[:, :, 0, 0, :-1]  # (samples, timesteps, input_dim), just like LSTM input.
         # We need the same constants as regular LSTM.
         lstm_constants = super(OntoAttentionLSTM, self).get_constants(sense_hyp_stripped_x)
         return lstm_constants
@@ -148,22 +149,11 @@ class OntoAttentionLSTM(LSTM):
         # redefining compute mask because the input ndim is different from the output ndim, and 
         # this needs to be handled.
         if self.return_sequences and mask is not None:
-            # Get rid of syn and hyp dimensions for computing loss
+            # Get rid of syn and hyp dimensions
+            # TODO: Ignore sense prior?
             return K.sum(mask, axis=(-3, -2))
         else:
             return None
-    """
-    def preprocess_input(self, x):
-        # We want to pass the mask along with x such that the step function has access to the mask.
-        # We do that by concatenating the mask to the input. The step function is responsible for 
-        # unpacking them to get the mask for a given timestep.
-        if self.onto_aware_mask is not None:
-            # (samples, length, senses, hyps, input_dim+1)
-            processed_x = K.concatenate([K.expand_dims(self.onto_aware_mask), x])
-        else:
-            processed_x = x
-        return processed_x
-    """
 
     def call(self, x, mask=None):
         # Overriding call to make a call to our own rnn instead of the inbuilt rnn.

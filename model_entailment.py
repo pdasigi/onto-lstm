@@ -156,6 +156,7 @@ class EntailmentModel(object):
         '''
         self.model.save("%s_%d.model" % (self.model_name_prefix, epoch))
         pickle.dump(self.data_processor, open("%s.dataproc" % self.model_name_prefix, "wb"))
+        pickle.dump(self.label_map, open("%s.labelmap" % self.model_name_prefix, "wb"))
 
     def save_best_model(self):
         '''
@@ -178,6 +179,7 @@ class EntailmentModel(object):
             self.model = load_model("%s_%d.model" % (self.model_name_prefix, epoch),
                                     custom_objects=self.custom_objects)
         self.data_processor = pickle.load(open("%s.dataproc" % self.model_name_prefix, "rb"))
+        self.label_map = pickle.load(open("%s.labelmap" % self.model_name_prefix, "rb"))
 
 
 class LSTMEntailmentModel(EntailmentModel):
@@ -224,7 +226,7 @@ class OntoLSTMEntailmentModel(EntailmentModel):
         self.use_attention = use_attention
         self.model_name_prefix = "ontolstm_ent_att=%s_senses=%d_hyps=%d" % (str(self.use_attention),
                                                                             self.num_senses, self.num_hyps)
-        self.custom_objects = {"OntoAttentionLSTM": OntoAttentionLSTM}
+        self.custom_objects = {"OntoAttentionLSTM": OntoAttentionLSTM, "OntoAwareEmbedding": OntoAwareEmbedding}
 
     def _get_encoded_sentence_variables(self, sent1_input_layer, sent2_input_layer, dropout,
                                         embedding_file, tune_embedding):
@@ -290,7 +292,7 @@ class OntoLSTMEntailmentModel(EntailmentModel):
             raise RuntimeError, "Model not trained yet!"
         # We need just one input to get attention. input_shape_at(0) gives a list with two shapes.
         input_shape = self.model.get_input_shape_at(0)[0]
-        input_layer = Input(input_shape[1:])  # removing batch size
+        input_layer = Input(input_shape[1:], dtype='int32')  # removing batch size
         embedding_layer = None
         encoder_layer = None
         for layer in self.model.layers:

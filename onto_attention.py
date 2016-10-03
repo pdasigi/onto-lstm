@@ -76,22 +76,24 @@ class OntoAttentionLSTM(LSTM):
         # Before the step function is called, the original input is dimshuffled to have (time, samples, senses, hyps, concept_dim)
         # So shape of x_onto_aware is (samples, senses, hyps, concept_dim + 1), +1 for sense prior parameter
         # TODO: Use sense priors even when not using attention?
-        x_synset_embeddings = x_onto_aware[:,:,:,:-1]  # (samples, senses, hyps, embedding_dim) 
+        x_synset_embeddings = x_onto_aware[:,:,:,:-1]  # (samples, senses, hyps, embedding_dim)
+
+        # Sense probability calculation
+        # Taking only the last dimension from all samples. These are the lambda values of exp distributions.
+        sense_parameters = K.expand_dims(x_onto_aware[:, 0, 0, -1])  # (samples,1)
+        # (1, num_senses)
+        sense_indices = K.cast_to_floatx([[ind for ind in range(self.num_senses)]])
+        # (samples, num_senses)
+        expanded_sense_indices = K.dot(K.ones_like(sense_parameters), sense_indices)
+        # Getting the sense probabilities from the exponential distribution. p(x) = \lambda * e^(-\lambda * x)
+        sense_scores = sense_parameters * K.exp(-sense_parameters * expanded_sense_indices)  # (samples, num_senses)
+        # Renormalizing sense scores to make \sum_{num_senses} p(sense | word) = 1
+        if mask_i is not None:
+            sense_mask = K.sum(K.squeeze(mask_i, axis=-1), axis=2)  # (samples, sense)
+            sense_scores = K.switch(sense_mask, sense_scores, K.zeros_like(sense_scores))
+        sense_probabilities = sense_scores / K.expand_dims(K.sum(sense_scores, axis=1) + K.epsilon())  # (samples, num_senses)
+        
         if self.use_attention:
-            # Sense attention
-            # Taking only the last dimension from all samples. These are the lambda values of exp distributions.
-            sense_parameters = K.expand_dims(x_onto_aware[:, 0, 0, -1])  # (samples,1)
-            # (1, num_senses)
-            sense_indices = K.cast_to_floatx([[ind for ind in range(self.num_senses)]])
-            # (samples, num_senses)
-            expanded_sense_indices = K.dot(K.ones_like(sense_parameters), sense_indices)
-            # Getting the sense probabilities from the exponential distribution. p(x) = \lambda * e^(-\lambda * x)
-            sense_scores = sense_parameters * K.exp(-sense_parameters * expanded_sense_indices)  # (samples, num_senses)
-            # Renormalizing sense scores to make \sum_{num_senses} p(sense | word) = 1
-            if mask_i is not None:
-                sense_mask = K.sum(K.squeeze(mask_i, axis=-1), axis=2)  # (samples, sense)
-                sense_scores = K.switch(sense_mask, sense_scores, K.zeros_like(sense_scores))
-            sense_probabilities = sense_scores / K.expand_dims(K.sum(sense_scores, axis=1) + K.epsilon())  # (samples, num_senses)
              
             # Generalization attention
             input_hyp_projection = K.dot(x_synset_embeddings, self.input_hyp_projector) # (samples, senses, hyps, proj_dim)
@@ -107,16 +109,16 @@ class OntoAttentionLSTM(LSTM):
             # We need to flatten this because we cannot perform softmax on tensors.
             flattened_scores = K.batch_flatten(hyp_scores)  # (samples, senses*hyps)
             hyp_attention = K.reshape(K.softmax(flattened_scores), scores_shape)  # (samples, senses, hyps)
-            # Renormalizing hyp attention to get p(hyp | sense, word)
-            hyp_given_sense_attention = hyp_attention / K.expand_dims(K.expand_dims(K.sum(hyp_attention, axis=(1,2)) + K.epsilon()))
-            # Multiply P(hyp | sense, word) and p(sense|word) . Attention values now sum to 1.
-            sense_hyp_attention = hyp_given_sense_attention * K.expand_dims(sense_probabilities)
         else:
             # matrix of ones for scores to be consistent (samples, senses, hyps)
-            sense_hyp_scores = K.ones_like(x_synset_embeddings)[:, :, :, 0]
+            hyp_attention = K.ones_like(x_synset_embeddings)[:, :, :, 0]
             if mask_i is not None:
-                sense_hyp_scores = K.switch(K.squeeze(mask_i, axis=-1), sense_hyp_scores, K.zeros_like(sense_hyp_scores))
-            sense_hyp_attention = sense_hyp_scores / K.expand_dims(K.expand_dims(K.sum(sense_hyp_scores, axis=(1,2))))
+                hyp_attention = K.switch(K.squeeze(mask_i, axis=-1), hyp_attention, K.zeros_like(hyp_attention))
+
+        # Renormalizing hyp attention to get p(hyp | sense, word). Summing over hyps.
+        hyp_given_sense_attention = hyp_attention / K.expand_dims(K.sum(hyp_attention, axis=2) + K.epsilon())
+        # Multiply P(hyp | sense, word) and p(sense|word) . Attention values now sum to 1.
+        sense_hyp_attention = hyp_given_sense_attention * K.expand_dims(sense_probabilities)
 
         if mask_i is not None:
             # Applying the mask on input

@@ -216,13 +216,14 @@ class LSTMEntailmentModel(EntailmentModel):
 
 
 class OntoLSTMEntailmentModel(EntailmentModel):
-    def __init__(self, num_senses, num_hyps, use_attention, **kwargs):
+    def __init__(self, num_senses, num_hyps, use_attention, set_sense_priors, **kwargs):
         super(OntoLSTMEntailmentModel, self).__init__(**kwargs)
         # Set self.data_processor again, now with the right arguments.
         self.data_processor = DataProcessor(word_syn_cutoff=num_senses, syn_path_cutoff=num_hyps)
         self.num_senses = num_senses
         self.num_hyps = num_hyps
         self.attention_model = None  # Keras model with just embedding and encoder to output attention.
+        self.set_sense_priors = set_sense_priors
         self.use_attention = use_attention
         self.model_name_prefix = "ontolstm_ent_att=%s_senses=%d_hyps=%d" % (str(self.use_attention),
                                                                             self.num_senses, self.num_hyps)
@@ -236,15 +237,17 @@ class OntoLSTMEntailmentModel(EntailmentModel):
             if not tune_embedding:
                 print >>sys.stderr, "Pretrained embedding is not given. Setting tune_embedding to True."
                 tune_embedding = True
-            embedding = None
+            embedding_weights = None
         else:
             # TODO: Other sources for prior initialization
-            initial_sense_prior_parameters = numpy.random.uniform(low=0.0, high=0.5, size=(word_vocab_size, 1))
+            embedding = self.data_processor.get_embedding_matrix(embedding_file, onto_aware=True)
             # Put the embedding in a list for Keras to treat it as initial weights of the embedding layer.
-            embedding = [self.data_processor.get_embedding_matrix(embedding_file, onto_aware=True),
-                         initial_sense_prior_parameters]
-        embedding_layer = OntoAwareEmbedding(word_vocab_size, synset_vocab_size, self.embed_dim, weights=embedding,
-            mask_zero=True, trainable=tune_embedding, name="embedding")
+            embedding_weights = [embedding]
+            if self.set_sense_priors:
+                initial_sense_prior_parameters = numpy.random.uniform(low=0.01, high=0.99, size=(word_vocab_size, 1))
+                embedding_weights.append(initial_sense_prior_parameters)
+        embedding_layer = OntoAwareEmbedding(word_vocab_size, synset_vocab_size, self.embed_dim, weights=embedding_weights,
+            mask_zero=True, set_sense_priors=self.set_sense_priors, trainable=tune_embedding, name="embedding")
         embedded_sent1 = embedding_layer(sent1_input_layer)
         embedded_sent2 = embedding_layer(sent2_input_layer)
         if "embedding" in dropout:
@@ -341,6 +344,7 @@ def main():
     argparser.add_argument('--onto_aware', help="Use ontoLSTM. If this flag is not set, will use traditional LSTM", action='store_true')
     argparser.add_argument('--num_senses', type=int, help="Number of senses per word if using OntoLSTM (default 2)", default=2)
     argparser.add_argument('--num_hyps', type=int, help="Number of hypernyms per sense if using OntoLSTM (default 5)", default=5)
+    argparser.add_argument('--set_sense_priors', help="Set an exponential prior on sense probabilities", action='store_true')
     argparser.add_argument('--use_attention', help="Use attention in ontoLSTM. If this flag is not set, will use average concept representations", action='store_true')
     argparser.add_argument('--test_file', type=str, help="Optionally provide test file for which accuracy will be computed")
     argparser.add_argument('--attention_output', type=str, help="Print attention values of the validation data in the given file")
@@ -353,7 +357,7 @@ def main():
     args = argparser.parse_args()
     if args.onto_aware:
         entailment_model = OntoLSTMEntailmentModel(num_senses=args.num_senses, num_hyps=args.num_hyps,
-            use_attention=args.use_attention, embed_dim=args.embed_dim)
+            use_attention=args.use_attention, set_sense_priors=args.set_sense_priors, embed_dim=args.embed_dim)
     else:
         entailment_model = LSTMEntailmentModel(embed_dim=args.embed_dim)
 

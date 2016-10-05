@@ -40,7 +40,7 @@ class OntoAwareEmbedding(Embedding):
         if self.set_sense_priors:
             self.sense_priors = self._get_initial_sense_priors((self.word_index_size, 1), name='{}_sense_priors'.format(self.name))
         else:
-            self.sense_priors = K.ones((self.word_index_size, 1)) * (1. / self.num_senses)  # uniform sense probs
+            self.sense_priors = K.zeros((self.word_index_size, 1))  # uniform sense probs
         # Keeping aside the initial weights to not let Embedding set them. It wouldn't know what sense priors are.
         if self.initial_weights is not None:
             self.onto_aware_embedding_weights = self.initial_weights
@@ -52,7 +52,7 @@ class OntoAwareEmbedding(Embedding):
 
         if self.initial_weights is not None:
             self.set_weights(self.initial_weights)
-    
+ 
     def call(self, x, mask=None):   
         # Remove the word indices at the end before making a call to Embedding.
         x_synsets = x[:, :, :, :-1]  # (num_samples, num_words, num_senses, num_hyps)
@@ -72,7 +72,7 @@ class OntoAwareEmbedding(Embedding):
         # Since the output dim is different, we need to change the mask size
         embedding_mask = super(OntoAwareEmbedding, self).compute_mask(x, mask)
         return embedding_mask[:, :, :, :-1]
-    
+
     def get_output_shape_for(self, input_shape):
         return input_shape[:3] + (self.num_hyps, self.embedding_dim+1)
 

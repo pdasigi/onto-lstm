@@ -87,10 +87,14 @@ class OntoAttentionLSTM(LSTM):
         expanded_sense_indices = K.dot(K.ones_like(sense_parameters), sense_indices)
         # Getting the sense probabilities from the exponential distribution. p(x) = \lambda * e^(-\lambda * x)
         sense_scores = sense_parameters * K.exp(-sense_parameters * expanded_sense_indices)  # (samples, num_senses)
-        # Renormalizing sense scores to make \sum_{num_senses} p(sense | word) = 1
+        # If sense priors were not set by the embedding layer, the sense_parameters will be zero, making sense 
+        # scores zero. What we really need is sense scores being uniform.
+        uniform_scores = K.ones_like(sense_scores) * (1. / self.num_senses)
+        sense_scores = K.switch(K.equal(sense_scores, K.zeros_like(sense_scores)), uniform_scores, sense_scores)
         if mask_i is not None:
             sense_mask = K.sum(K.squeeze(mask_i, axis=-1), axis=2)  # (samples, sense)
             sense_scores = K.switch(sense_mask, sense_scores, K.zeros_like(sense_scores))
+        # Renormalizing sense scores to make \sum_{num_senses} p(sense | word) = 1
         sense_probabilities = sense_scores / K.expand_dims(K.sum(sense_scores, axis=1) + K.epsilon())  # (samples, num_senses)
         
         if self.use_attention:

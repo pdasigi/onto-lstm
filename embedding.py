@@ -51,7 +51,7 @@ class OntoAwareEmbedding(Embedding):
             self.trainable_weights.append(self.sense_priors)
 
         if self.initial_weights is not None:
-            self.set_weights(self.initial_weights)
+            self.set_weights(self.onto_aware_embedding_weights)
  
     def call(self, x, mask=None):   
         # Remove the word indices at the end before making a call to Embedding.

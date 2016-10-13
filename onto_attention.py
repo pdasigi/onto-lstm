@@ -105,7 +105,7 @@ class OntoAttentionLSTM(LSTM):
             context_hyp_projection_expanded = K.expand_dims(K.expand_dims(context_hyp_projection,
                                                                           dim=1),
                                                             dim=1)  #(samples, 1, 1, proj_dim)
-            hyp_projection = K.sigmoid(input_hyp_projection + context_hyp_projection_expanded) # (samples, senses, hyps, proj_dim)
+            hyp_projection = K.tanh(input_hyp_projection + context_hyp_projection_expanded) # (samples, senses, hyps, proj_dim)
             hyp_scores = K.dot(hyp_projection, self.hyp_scorer) # (samples, senses, hyps)
             if mask_i is not None:
                 hyp_scores = K.switch(K.squeeze(mask_i, axis=-1), hyp_scores, K.zeros_like(hyp_scores))

@@ -52,11 +52,13 @@ class OntoAttentionLSTM(LSTM):
                 name='{}_input_hyp_projector'.format(self.name)) # Projection operator for synsets
             self.context_hyp_projector = self.inner_init((self.output_dim, self.output_dim),
                 name='{}_context_hyp_projector'.format(self.name)) # Projection operator for hidden state (context)
+            self.hyp_projector2 = self.inner_init((self.output_dim, self.output_dim),
+                name='{}_hyp_projector2'.format(self.name)) # Projection operator for hidden state (context)
             self.hyp_scorer = self.init((self.output_dim,), name='{}_hyp_scorer'.format(self.name))
 
             # LSTM's build method would have initialized trainable_weights. Add to it.
-            self.trainable_weights.extend([self.input_hyp_projector,
-                                           self.context_hyp_projector, self.hyp_scorer])
+            self.trainable_weights.extend([self.input_hyp_projector, self.context_hyp_projector,
+                                           self.hyp_projector2, self.hyp_scorer])
 
         if initial_ontolstm_weights is not None:
             self.set_weights(initial_ontolstm_weights)
@@ -100,13 +102,14 @@ class OntoAttentionLSTM(LSTM):
         if self.use_attention:
              
             # Generalization attention
-            input_hyp_projection = K.dot(x_synset_embeddings, self.input_hyp_projector) # (samples, senses, hyps, proj_dim)
-            context_hyp_projection = K.dot(h_tm1, self.context_hyp_projector) # (samples, proj_dim)
+            input_hyp_projection = K.dot(x_synset_embeddings, self.input_hyp_projector) # (samples, senses, hyps, output_dim)
+            context_hyp_projection = K.dot(h_tm1, self.context_hyp_projector) # (samples, output_dim)
             context_hyp_projection_expanded = K.expand_dims(K.expand_dims(context_hyp_projection,
                                                                           dim=1),
-                                                            dim=1)  #(samples, 1, 1, proj_dim)
-            hyp_projection = K.tanh(input_hyp_projection + context_hyp_projection_expanded) # (samples, senses, hyps, proj_dim)
-            hyp_scores = K.dot(hyp_projection, self.hyp_scorer) # (samples, senses, hyps)
+                                                            dim=1)  #(samples, 1, 1, output_dim)
+            hyp_projection1 = K.tanh(input_hyp_projection + context_hyp_projection_expanded) # (samples, senses, hyps, output_dim)
+            hyp_projection2 = K.tanh(K.dot(hyp_projection1, self.hyp_projector2)) # (samples, senses, hyps, output_dim)
+            hyp_scores = K.dot(hyp_projection2, self.hyp_scorer) # (samples, senses, hyps)
             if mask_i is not None:
                 hyp_scores = K.switch(K.squeeze(mask_i, axis=-1), hyp_scores, K.zeros_like(hyp_scores))
             scores_shape = K.shape(hyp_scores)

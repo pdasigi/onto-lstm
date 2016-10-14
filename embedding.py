@@ -21,6 +21,7 @@ class OntoAwareEmbedding(Embedding):
         # Convincing Embedding to return an embedding of the right shape. The output_dim of this layer is embedding_dim+1
         kwargs['output_dim'] = self.embedding_dim
         kwargs['input_dim'] = self.synset_index_size
+        self.onto_aware_embedding_weights = None
         super(OntoAwareEmbedding, self).__init__(**kwargs)
 
     @staticmethod

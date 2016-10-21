@@ -11,6 +11,7 @@ from keras.layers import Dense, Dropout, Embedding, Input, LSTM, merge
 from embedding import OntoAwareEmbedding
 from index_data import DataProcessor
 from onto_attention import OntoAttentionLSTM
+from nse import NSE, MultipleMemoryAccessNSE, InputMemoryMerger
 
 class EntailmentModel(object):
     def __init__(self, **kwargs):
@@ -336,12 +337,58 @@ class OntoLSTMEntailmentModel(EntailmentModel):
         outfile.close()
 
 
+class NSEEntailmentModel(EntailmentModel):
+    def __init__(self, shared_memory=True, **kwargs):
+        super(NSEEntailmentModel, self).__init__(**kwargs)
+        self.shared_memory = shared_memory
+        self.model_name_prefix = "nse_ent_shared_mem=%s" % self.shared_memory
+        self.custom_objects = {"NSE": NSE}
+        if self.shared_memory:
+            self.custom_objects["MultipleMemoryAccessNSE"] = MultipleMemoryAccessNSE
+
+    def _get_encoded_sentence_variables(self, sent1_input_layer, sent2_input_layer, dropout,
+                                        embedding_file, tune_embedding):
+        if embedding_file is None:
+            if not tune_embedding:
+                print >>sys.stderr, "Pretrained embedding is not given. Setting tune_embedding to True."
+                tune_embedding = True
+            embedding = None
+        else:
+            # Put the embedding in a list for Keras to treat it as initiali weights of the embeddign layer.
+            embedding = [self.data_processor.get_embedding_matrix(embedding_file, onto_aware=False)]
+        vocab_size = self.data_processor.get_vocab_size(onto_aware=False)
+        embedding_layer = Embedding(input_dim=vocab_size, output_dim=self.embed_dim, weights=embedding,
+            trainable=tune_embedding, mask_zero=True, name="embedding")
+        embedded_sent1 = embedding_layer(sent1_input_layer)
+        embedded_sent2 = embedding_layer(sent2_input_layer)
+        if "embedding" in dropout:
+            embedded_sent1 = Dropout(dropout["embedding"])(embedded_sent1)
+            embedded_sent2 = Dropout(dropout["embedding"])(embedded_sent2)
+        if self.shared_memory:
+            premise_encoder = NSE(output_dim=self.embed_dim, return_mode="output_and_memory",
+                                  name="premise_encoder")
+            hypothesis_encoder = MultipleMemoryAccessNSE(output_dim=self.embed_dim, name="hypothesis_encoder")
+            encoded_sent1 = premise_encoder(embedded_sent1)
+            mmanse_input = InputMemoryMerger(name="merge_inputs")([encoded_sent1, embedded_sent2])
+            encoded_sent2 = hypothesis_encoder(mmanse_input) 
+        else:
+            encoder = NSE(output_dim=self.embed_dim, name="encoder")
+            encoded_sent1 = encoder(embedded_sent1)
+            encoded_sent2 = encoder(embedded_sent2)
+        if "encoder" in dropout:
+            encoded_sent1 = Dropout(dropout["encoder"])(encoded_sent1)
+            encoded_sent2 = Dropout(dropout["encoder"])(encoded_sent2)
+        return encoded_sent1, encoded_sent2
+
+
 def main():
     argparser = argparse.ArgumentParser(description="Train entailment model")
     argparser.add_argument('--train_file', type=str, help="TSV file with label, premise, hypothesis in three columns")
     argparser.add_argument('--embedding_file', type=str, help="Gzipped embedding file")
     argparser.add_argument('--embed_dim', type=int, help="Word/Synset vector size", default=50)
-    argparser.add_argument('--onto_aware', help="Use ontoLSTM. If this flag is not set, will use traditional LSTM", action='store_true')
+    argparser.add_argument('--encoder', type=str, help="LSTM or NSE?", default="lstm")
+    argparser.add_argument('--nse_shared_memory', help="Use shared memory NSE id encoder is NSE", action='store_true')
+    argparser.add_argument('--onto_aware', help="Use ontology aware encoder. If this flag is not set, will use traditional encoder", action='store_true')
     argparser.add_argument('--num_senses', type=int, help="Number of senses per word if using OntoLSTM (default 2)", default=2)
     argparser.add_argument('--num_hyps', type=int, help="Number of hypernyms per sense if using OntoLSTM (default 5)", default=5)
     argparser.add_argument('--set_sense_priors', help="Set an exponential prior on sense probabilities", action='store_true')
@@ -355,11 +402,19 @@ def main():
     argparser.add_argument('--embedding_dropout', type=float, help="Dropout after embedding", default=0.5)
     argparser.add_argument('--encoder_dropout', type=float, help="Dropout after encoder", default=0.2)
     args = argparser.parse_args()
-    if args.onto_aware:
-        entailment_model = OntoLSTMEntailmentModel(num_senses=args.num_senses, num_hyps=args.num_hyps,
-            use_attention=args.use_attention, set_sense_priors=args.set_sense_priors, embed_dim=args.embed_dim)
+    if args.encoder == "lstm":
+        if args.onto_aware:
+            entailment_model = OntoLSTMEntailmentModel(num_senses=args.num_senses, num_hyps=args.num_hyps,
+                                                       use_attention=args.use_attention,
+                                                       set_sense_priors=args.set_sense_priors,
+                                                       embed_dim=args.embed_dim)
+        else:
+            entailment_model = LSTMEntailmentModel(embed_dim=args.embed_dim)
     else:
-        entailment_model = LSTMEntailmentModel(embed_dim=args.embed_dim)
+        if args.onto_aware:
+            raise NotImplementedError, "OntoNSEEntailmentModel coming soon"
+        else: 
+            entailment_model = NSEEntailmentModel(embed_dim=args.embed_dim, shared_memory=args.nse_shared_memory)
 
     ## Train model or load trained model
     if args.train_file is None:

@@ -290,4 +290,21 @@ class InputMemoryMerger(Layer):
         mmanse_embed_input = inputs[1]  # (batch_size, nse_input_length, output_dim)
         shared_memory = nse_output_and_memory[:, 1:, :]  # (batch_size, nse_input_length, output_dim)
         return K.concatenate([mmanse_embed_input, shared_memory], axis=1)
-        
+
+class OutputSplitter(Layer):
+    '''
+    This layer takes the concatenation of output and memory from NSE and returns only the output.
+    '''
+    def __init__(self, **kwargs):
+        self.supperots_masking = True
+        super(OutputSplitter, self).__init__(**kwargs)
+
+    def get_output_shape_for(self, input_shape):
+        return (input_shape[0], input_shape[2])
+
+    def compute_mask(self, inputs, mask=None):
+        # pylint: disable=unused-argument
+        return None
+
+    def call(self, inputs, mask=None):
+        return inputs[:, 0, :]  # (batch_size, output_dim)

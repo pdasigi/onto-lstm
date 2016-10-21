@@ -11,7 +11,7 @@ from keras.layers import Dense, Dropout, Embedding, Input, LSTM, merge
 from embedding import OntoAwareEmbedding
 from index_data import DataProcessor
 from onto_attention import OntoAttentionLSTM
-from nse import NSE, MultipleMemoryAccessNSE, InputMemoryMerger
+from nse import NSE, MultipleMemoryAccessNSE, InputMemoryMerger, OutputSplitter
 
 class EntailmentModel(object):
     def __init__(self, **kwargs):
@@ -368,8 +368,9 @@ class NSEEntailmentModel(EntailmentModel):
             premise_encoder = NSE(output_dim=self.embed_dim, return_mode="output_and_memory",
                                   name="premise_encoder")
             hypothesis_encoder = MultipleMemoryAccessNSE(output_dim=self.embed_dim, name="hypothesis_encoder")
-            encoded_sent1 = premise_encoder(embedded_sent1)
-            mmanse_input = InputMemoryMerger(name="merge_inputs")([encoded_sent1, embedded_sent2])
+            encoded_sent1_and_memory = premise_encoder(embedded_sent1)
+            encoder_sent1 = OutputSplitter(name"get_output")(encoded_sent1_and_memory)
+            mmanse_input = InputMemoryMerger(name="merge_inputs")([encoded_sent1_and_memory, embedded_sent2])
             encoded_sent2 = hypothesis_encoder(mmanse_input) 
         else:
             encoder = NSE(output_dim=self.embed_dim, name="encoder")

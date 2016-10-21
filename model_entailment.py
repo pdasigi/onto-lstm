@@ -369,7 +369,7 @@ class NSEEntailmentModel(EntailmentModel):
                                   name="premise_encoder")
             hypothesis_encoder = MultipleMemoryAccessNSE(output_dim=self.embed_dim, name="hypothesis_encoder")
             encoded_sent1_and_memory = premise_encoder(embedded_sent1)
-            encoder_sent1 = OutputSplitter(name"get_output")(encoded_sent1_and_memory)
+            encoded_sent1 = OutputSplitter(name="get_output")(encoded_sent1_and_memory)
             mmanse_input = InputMemoryMerger(name="merge_inputs")([encoded_sent1_and_memory, embedded_sent2])
             encoded_sent2 = hypothesis_encoder(mmanse_input) 
         else:

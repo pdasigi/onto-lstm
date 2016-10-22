@@ -50,7 +50,8 @@ class EntailmentModel(object):
                                                                             embedding_file, tune_embedding)
         concat_sent_rep = merge([encoded_sent1, encoded_sent2], mode='concat')
         mul_sent_rep = merge([encoded_sent1, encoded_sent2], mode='mul')
-        diff_sent_rep = merge([encoded_sent1, encoded_sent2], mode=lambda l: l[0]-l[1], output_shape=lambda l:l[0])
+        diff_sent_rep = merge([encoded_sent1, encoded_sent2], mode=lambda l: l[0]-l[1],
+                              output_shape=lambda l: l[0])
         # Use heuristic from Mou et al. (2015) to get final merged representation
         merged_sent_rep = merge([concat_sent_rep, mul_sent_rep, diff_sent_rep], mode='concat')
         # TODO: Make the number of mlp layers a hyperparameter and expose it.
@@ -66,7 +67,7 @@ class EntailmentModel(object):
         best_accuracy = 0.0
         num_worse_epochs = 0
         for epoch_id in range(num_epochs):
-            print >>sys.stderr, "Epoch: %d" % epoch_id 
+            print >>sys.stderr, "Epoch: %d" % epoch_id
             history = model.fit(train_inputs, train_labels, validation_split=0.1, nb_epoch=1)
             validation_accuracy = history.history['val_acc'][0]  # history['val_acc'] is a list of size nb_epoch
             if validation_accuracy > best_accuracy:
@@ -112,7 +113,7 @@ class EntailmentModel(object):
         tagged_sentences, label_ind = zip(*sentences_and_labels)
         print >>sys.stderr, "Indexing training data"
         train_inputs = self.data_processor.prepare_paired_input(tagged_sentences, onto_aware=onto_aware,
-            for_test=False, remove_singletons=True)
+                                                                for_test=False, remove_singletons=True)
         train_labels = self._make_one_hot(label_ind)
         return train_inputs, train_labels
 
@@ -137,7 +138,7 @@ class EntailmentModel(object):
         input_shape = self.model.get_input_shape_at(0)[0]  # take the shape of the first of two inputs at 0.
         sentlenlimit = input_shape[1]  # (num_sentences, num_words, num_senses, num_hyps)
         test_inputs = self.data_processor.prepare_paired_input(tagged_sentences, onto_aware=onto_aware,
-            sentlenlimit=sentlenlimit, for_test=True)
+                                                               sentlenlimit=sentlenlimit, for_test=True)
         test_labels = self._make_one_hot(label_ind)
         return test_inputs, test_labels
 
@@ -358,20 +359,22 @@ class NSEEntailmentModel(EntailmentModel):
             embedding = [self.data_processor.get_embedding_matrix(embedding_file, onto_aware=False)]
         vocab_size = self.data_processor.get_vocab_size(onto_aware=False)
         embedding_layer = Embedding(input_dim=vocab_size, output_dim=self.embed_dim, weights=embedding,
-            trainable=tune_embedding, mask_zero=True, name="embedding")
+                                    trainable=tune_embedding, mask_zero=True, name="embedding")
         embedded_sent1 = embedding_layer(sent1_input_layer)
         embedded_sent2 = embedding_layer(sent2_input_layer)
         if "embedding" in dropout:
             embedded_sent1 = Dropout(dropout["embedding"])(embedded_sent1)
             embedded_sent2 = Dropout(dropout["embedding"])(embedded_sent2)
         if self.shared_memory:
-            premise_encoder = NSE(output_dim=self.embed_dim, return_mode="output_and_memory",
-                                  name="premise_encoder")
-            hypothesis_encoder = MultipleMemoryAccessNSE(output_dim=self.embed_dim, name="hypothesis_encoder")
-            encoded_sent1_and_memory = premise_encoder(embedded_sent1)
-            encoded_sent1 = OutputSplitter(name="get_output")(encoded_sent1_and_memory)
-            mmanse_input = InputMemoryMerger(name="merge_inputs")([encoded_sent1_and_memory, embedded_sent2])
-            encoded_sent2 = hypothesis_encoder(mmanse_input) 
+            encoder = MultipleMemoryAccessNSE(output_dim=self.embed_dim, return_mode="output_and_memory",
+                                              name="encoder")
+            mmanse_sent1_input = InputMemoryMerger(name="merge_sent1_input")([embedded_sent1, embedded_sent2])
+            encoded_sent1_and_memory = encoder(mmanse_sent1_input)
+            encoded_sent1 = OutputSplitter("output", name="get_sent1_output")(encoded_sent1_and_memory)
+            shared_memory = OutputSplitter("memory", name="get_shared_memory")(encoded_sent1_and_memory)
+            mmanse_sent2_input = InputMemoryMerger(name="merge_sent2_input")([embedded_sent2, shared_memory])
+            encoded_sent2_and_memory = encoder(mmanse_sent2_input)
+            encoded_sent2 = OutputSplitter("output", name="get_sent2_output")(encoded_sent2_and_memory)
         else:
             encoder = NSE(output_dim=self.embed_dim, name="encoder")
             encoded_sent1 = encoder(embedded_sent1)

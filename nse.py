@@ -263,9 +263,9 @@ class MultipleMemoryAccessNSE(NSE):
 
 class InputMemoryMerger(Layer):
     '''
-    This layer taks as input the output of a NSE layer, and the embedded input to a MMANSE layer, and prepares
-    a single input tensor for MMANSE that is a concatenation of the first sentence's memory and the second
-    sentence's embedding.
+    This layer taks as input, the memory part of the output of a NSE layer, and the embedded input to a MMANSE
+    layer, and prepares a single input tensor for MMANSE that is a concatenation of the first sentence's memory
+    and the second sentence's embedding.
     This is a concrete layer instead of a lambda function because we want to support masking.
     '''
     def __init__(self, **kwargs):
@@ -276,35 +276,50 @@ class InputMemoryMerger(Layer):
         return (input_shapes[1][0], input_shapes[1][1]*2, input_shapes[1][2])
 
     def compute_mask(self, inputs, mask=None):
+        # pylint: disable=unused-argument
         if mask is None:
             return None
         elif mask == [None, None]:
             return None
         else:
-            nse_output_mask, mmanse_embed_mask = mask
-            memory_mask = nse_output_mask[:, 1:]  # (batch_size, nse_input_length)
+            memory_mask, mmanse_embed_mask = mask
             return K.concatenate([mmanse_embed_mask, memory_mask], axis=1)  # (batch_size, nse_input_length * 2)
         
     def call(self, inputs, mask=None):
-        nse_output_and_memory = inputs[0]
+        shared_memory = inputs[0]
         mmanse_embed_input = inputs[1]  # (batch_size, nse_input_length, output_dim)
-        shared_memory = nse_output_and_memory[:, 1:, :]  # (batch_size, nse_input_length, output_dim)
         return K.concatenate([mmanse_embed_input, shared_memory], axis=1)
 
 class OutputSplitter(Layer):
     '''
-    This layer takes the concatenation of output and memory from NSE and returns only the output.
+    This layer takes the concatenation of output and memory from NSE and returns either the output or the
+    memory.
     '''
-    def __init__(self, **kwargs):
+    def __init__(self, return_mode, **kwargs):
         self.supperots_masking = True
+        if return_mode not in ["output", "memory"]:
+            raise Exception("Invalid return mode: %s" % return_mode)
+        self.return_mode = return_mode
         super(OutputSplitter, self).__init__(**kwargs)
 
     def get_output_shape_for(self, input_shape):
-        return (input_shape[0], input_shape[2])
+        if self.return_mode == "output":
+            return (input_shape[0], input_shape[2])
+        else:
+            # Return mode is memory.
+            # input contains output and memory concatenated along the second dimension.
+            return (input_shape[0], input_shape[1] - 1, input_shape[2])
 
     def compute_mask(self, inputs, mask=None):
         # pylint: disable=unused-argument
-        return None
+        if self.return_mode == "output" or mask is None:
+            return None
+        else:
+            # Return mode is memory and mask is not None
+            return mask[:, 1:]  # (batch_size, nse_input_length)
 
     def call(self, inputs, mask=None):
-        return inputs[:, 0, :]  # (batch_size, output_dim)
+        if self.return_mode == "output":
+            return inputs[:, 0, :]  # (batch_size, output_dim)
+        else:
+            return inputs[:, 1:, :]  # (batch_size, nse_input_length, output_dim)

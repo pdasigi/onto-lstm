@@ -1,9 +1,12 @@
 import warnings
+from overrides import overrides
 
 from keras.layers import LSTM
 from keras.engine import InputSpec
 from keras import backend as K
 from keras_extensions import changing_ndim_rnn
+
+from nse import NSE, MultipleMemoryAccessNSE
 
 class OntoAttentionLSTM(LSTM):
     '''
@@ -159,8 +162,9 @@ class OntoAttentionLSTM(LSTM):
         # this needs to be handled.
         if self.return_sequences and mask is not None:
             # Get rid of syn and hyp dimensions
-            # TODO: Ignore sense prior?
-            return K.sum(mask, axis=(-3, -2))
+            # input mask's shape: (batch_size, num_words, num_hyps, num_senses)
+            # output mask's shape: (batch_size, num_words)
+            return K.sum(mask, axis=(-2, -1))
         else:
             return None
 
@@ -203,3 +207,45 @@ class OntoAttentionLSTM(LSTM):
                   "return_attention": self.return_attention}
         base_config = super(OntoAttentionLSTM, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
+
+
+class OntoAttentionNSE(NSE):
+    '''
+    NSE with an OntoLSTM as the reader.
+    '''
+    def __init__(self, num_senses, num_hyps, use_attention=False, return_attention=False, **kwargs):
+        assert "output_dim" in kwargs
+        output_dim = kwargs.pop("output_dim")
+        super(OntoAttentionNSE, self).__init__(output_dim, **kwargs)
+        self.input_spec = [InputSpec(ndim=5)]
+        # TODO: Define an attention output method that rebuilds the reader.
+        self.return_attention = return_attention
+        self.reader = OntoAttentionLSTM(self.output_dim, num_senses, num_hyps, use_attention=use_attention,
+                                        return_sequences=True, return_attention=False)
+
+    def compute_mask(self, input, mask):
+        reader_mask = self.reader.compute_mask(input, mask)
+        # The input mask is of ndim 5. Pass the output mask of the reader to NSE instead of the input mask.
+        return super(OntoAttentionNSE, self).compute_mask(input, reader_mask)
+
+    def read(self, onto_nse_input, input_mask=None):
+        input_to_read = onto_nse_input  # (batch_size, num_words, num_senses, num_hyps, output_dim + 1)
+        memory_input = input_to_read[:, :, :, :, :-1]  # (bs, words, senses, hyps, output_dim)
+        if input_mask is None:
+            mem_0 = K.mean(memory_input, axis=(2, 3))  # (batch_size, num_words, output_dim)
+        else:
+            memory_mask = input_mask
+            if K.ndim(onto_nse_input) != K.ndim(input_mask):
+                memory_mask = K.expand_dims(input_mask)
+            memory_mask = K.cast(memory_mask / (K.sum(memory_mask) + K.epsilon()), 'float32')
+            mem_0 = K.sum(memory_input * memory_mask, axis=(2,3))  # (batch_size, num_words, output_dim)
+        flattened_mem_0 = K.batch_flatten(mem_0)
+        o = self.reader.call(input_to_read, input_mask)
+        output_mask = self.reader.compute_mask(input_to_read, input_mask)
+        return o, [flattened_mem_0], output_mask
+
+
+class MultipleMemoryAccessOntoNSE(MultipleMemoryAccessNSE):
+    @overrides
+    def read(self, onto_nse_input, input_mask=None):
+        pass

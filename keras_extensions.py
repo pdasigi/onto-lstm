@@ -142,7 +142,7 @@ def changing_ndim_rnn(step_function, inputs, initial_states,
             successive_states = []
             states = initial_states
             for i in indices:
-                output, states = step_function(inputs[i], states)
+                output, states = step_function(inputs[i], states + (None,))  # None for mask.
                 successive_outputs.append(output)
                 successive_states.append(states)
             outputs = T.stack(*successive_outputs)
@@ -152,7 +152,7 @@ def changing_ndim_rnn(step_function, inputs, initial_states,
 
         else:
             def _step(input, *states):
-                output, new_states = step_function(input, states)
+                output, new_states = step_function(input, states + (None,))  # None for mask.
                 return [output] + new_states
 
             results, _ = theano.scan(

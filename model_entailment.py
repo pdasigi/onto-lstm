@@ -10,7 +10,7 @@ from keras.layers import Dense, Dropout, Embedding, Input, LSTM, merge
 
 from embedding import OntoAwareEmbedding
 from index_data import DataProcessor
-from onto_attention import OntoAttentionLSTM
+from onto_attention import OntoAttentionLSTM, OntoAttentionNSE
 from nse import NSE, MultipleMemoryAccessNSE, InputMemoryMerger, OutputSplitter
 
 class EntailmentModel(object):
@@ -255,14 +255,19 @@ class OntoLSTMEntailmentModel(EntailmentModel):
         if "embedding" in dropout:
             embedded_sent1 = Dropout(dropout["embedding"])(embedded_sent1)
             embedded_sent2 = Dropout(dropout["embedding"])(embedded_sent2)
-        lstm = OntoAttentionLSTM(input_dim=self.embed_dim, output_dim=self.embed_dim, num_senses=self.num_senses,
-                num_hyps=self.num_hyps, use_attention=self.use_attention, name="encoder")
-        encoded_sent1 = lstm(embedded_sent1)
-        encoded_sent2 = lstm(embedded_sent2)
+        encoder = self.get_encoder()
+        encoded_sent1 = encoder(embedded_sent1)
+        encoded_sent2 = encoder(embedded_sent2)
         if "encoder" in dropout:
             encoded_sent1 = Dropout(dropout["encoder"])(encoded_sent1)
             encoded_sent2 = Dropout(dropout["encoder"])(encoded_sent2)
         return encoded_sent1, encoded_sent2
+
+    def get_encoder(self):
+        lstm = OntoAttentionLSTM(input_dim=self.embed_dim, output_dim=self.embed_dim, num_senses=self.num_senses,
+                                 num_hyps=self.num_hyps, use_attention=self.use_attention, consume_less="gpu",
+                                 name="onto_lstm")
+        return lstm
         
     def get_attention(self, inputs):
         # Takes inputs and returns pairs of synsets and corresponding attention values.
@@ -385,6 +390,13 @@ class NSEEntailmentModel(EntailmentModel):
         return encoded_sent1, encoded_sent2
 
 
+class OntoNSEEntailmentModel(OntoLSTMEntailmentModel):
+    def get_encoder(self):
+        encoder = OntoAttentionNSE(self.num_senses, self.num_hyps, use_attention=self.use_attention,
+                                   return_attention=False, output_dim=self.embed_dim, name="onto_nse")
+        return encoder
+
+
 def main():
     argparser = argparse.ArgumentParser(description="Train entailment model")
     argparser.add_argument('--train_file', type=str, help="TSV file with label, premise, hypothesis in three columns")
@@ -416,7 +428,12 @@ def main():
             entailment_model = LSTMEntailmentModel(embed_dim=args.embed_dim)
     else:
         if args.onto_aware:
-            raise NotImplementedError, "OntoNSEEntailmentModel coming soon"
+            if args.nse_shared_memory:
+                raise NotImplementedError, "OntoMMANSEEntailmentModel coming soon"
+            entailment_model = OntoNSEEntailmentModel(num_senses=args.num_senses, num_hyps=args.num_hyps,
+                                                      use_attention=args.use_attention,
+                                                      set_sense_priors=args.set_sense_priors,
+                                                      embed_dim=args.embed_dim, shared_memory=False)
         else: 
             entailment_model = NSEEntailmentModel(embed_dim=args.embed_dim, shared_memory=args.nse_shared_memory)
 

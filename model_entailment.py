@@ -227,8 +227,8 @@ class OntoLSTMEntailmentModel(EntailmentModel):
         self.attention_model = None  # Keras model with just embedding and encoder to output attention.
         self.set_sense_priors = set_sense_priors
         self.use_attention = use_attention
-        self.model_name_prefix = "ontolstm_ent_att=%s_senses=%d_hyps=%d_tune-embedding=%s" % (str(self.use_attention),
-                                                                            self.num_senses, self.num_hyps, str(tune_embedding))
+        self.model_name_prefix = "ontolstm_ent_att=%s_senses=%d_hyps=%d_sense-priors=%s_tune-embedding=%s" % (
+            str(self.use_attention), self.num_senses, self.num_hyps, str(set_sense_priors), str(tune_embedding))
         self.custom_objects = {"OntoAttentionLSTM": OntoAttentionLSTM, "OntoAwareEmbedding": OntoAwareEmbedding}
 
     def _get_encoded_sentence_variables(self, sent1_input_layer, sent2_input_layer, dropout,
@@ -393,8 +393,10 @@ class NSEEntailmentModel(EntailmentModel):
 class OntoNSEEntailmentModel(OntoLSTMEntailmentModel):
     def __init__(self, **kwargs):
         super(OntoNSEEntailmentModel, self).__init__(**kwargs)
-        self.model_name_prefix = "ontonse_ent_att=%s_senses=%d_hyps=%d_tune-embedding=%s" % (str(self.use_attention),
-                                                                            self.num_senses, self.num_hyps, str(tune_embedding))
+        tune_embedding = kwargs["tune_embedding"]
+        self.model_name_prefix = "ontonse_ent_att=%s_senses=%d_hyps=%d_sense-priors=%s_tune-embedding=%s" % (
+            str(self.use_attention), self.num_senses, self.num_hyps, str(self.set_sense_priors),
+            str(tune_embedding))
 
     def get_encoder(self):
         encoder = OntoAttentionNSE(self.num_senses, self.num_hyps, use_attention=self.use_attention,

@@ -68,7 +68,7 @@ class EntailmentModel(object):
         num_worse_epochs = 0
         for epoch_id in range(num_epochs):
             print >>sys.stderr, "Epoch: %d" % epoch_id
-            history = model.fit(train_inputs, train_labels, validation_split=0.1, nb_epoch=1)
+            history = model.fit(train_inputs, train_labels, validation_split=0.017568, nb_epoch=1)
             validation_accuracy = history.history['val_acc'][0]  # history['val_acc'] is a list of size nb_epoch
             if validation_accuracy > best_accuracy:
                 self.save_model(epoch_id)
@@ -218,7 +218,7 @@ class LSTMEntailmentModel(EntailmentModel):
 
 
 class OntoLSTMEntailmentModel(EntailmentModel):
-    def __init__(self, num_senses, num_hyps, use_attention, set_sense_priors, **kwargs):
+    def __init__(self, num_senses, num_hyps, use_attention, set_sense_priors, tune_embedding, **kwargs):
         super(OntoLSTMEntailmentModel, self).__init__(**kwargs)
         # Set self.data_processor again, now with the right arguments.
         self.data_processor = DataProcessor(word_syn_cutoff=num_senses, syn_path_cutoff=num_hyps)
@@ -227,8 +227,8 @@ class OntoLSTMEntailmentModel(EntailmentModel):
         self.attention_model = None  # Keras model with just embedding and encoder to output attention.
         self.set_sense_priors = set_sense_priors
         self.use_attention = use_attention
-        self.model_name_prefix = "ontolstm_ent_att=%s_senses=%d_hyps=%d" % (str(self.use_attention),
-                                                                            self.num_senses, self.num_hyps)
+        self.model_name_prefix = "ontolstm_ent_att=%s_senses=%d_hyps=%d_tune-embedding=%s" % (str(self.use_attention),
+                                                                            self.num_senses, self.num_hyps, str(tune_embedding))
         self.custom_objects = {"OntoAttentionLSTM": OntoAttentionLSTM, "OntoAwareEmbedding": OntoAwareEmbedding}
 
     def _get_encoded_sentence_variables(self, sent1_input_layer, sent2_input_layer, dropout,
@@ -391,6 +391,11 @@ class NSEEntailmentModel(EntailmentModel):
 
 
 class OntoNSEEntailmentModel(OntoLSTMEntailmentModel):
+    def __init__(self, **kwargs):
+        super(OntoNSEEntailmentModel, self).__init__(**kwargs)
+        self.model_name_prefix = "ontonse_ent_att=%s_senses=%d_hyps=%d_tune-embedding=%s" % (str(self.use_attention),
+                                                                            self.num_senses, self.num_hyps, str(tune_embedding))
+
     def get_encoder(self):
         encoder = OntoAttentionNSE(self.num_senses, self.num_hyps, use_attention=self.use_attention,
                                    return_attention=False, output_dim=self.embed_dim, name="onto_nse")
@@ -423,7 +428,7 @@ def main():
             entailment_model = OntoLSTMEntailmentModel(num_senses=args.num_senses, num_hyps=args.num_hyps,
                                                        use_attention=args.use_attention,
                                                        set_sense_priors=args.set_sense_priors,
-                                                       embed_dim=args.embed_dim)
+                                                       embed_dim=args.embed_dim, tune_embedding=args.tune_embedding)
         else:
             entailment_model = LSTMEntailmentModel(embed_dim=args.embed_dim)
     else:
@@ -433,7 +438,7 @@ def main():
             entailment_model = OntoNSEEntailmentModel(num_senses=args.num_senses, num_hyps=args.num_hyps,
                                                       use_attention=args.use_attention,
                                                       set_sense_priors=args.set_sense_priors,
-                                                      embed_dim=args.embed_dim, shared_memory=False)
+                                                      embed_dim=args.embed_dim, tune_embedding=args.tune_embedding)
         else: 
             entailment_model = NSEEntailmentModel(embed_dim=args.embed_dim, shared_memory=args.nse_shared_memory)
 

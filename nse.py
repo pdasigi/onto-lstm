@@ -31,11 +31,12 @@ class NSE(Layer):
         self.input_length = input_length
         self.composer_activation = composer_activation
         super(NSE, self).__init__(**kwargs)
-        self.reader = LSTM(self.output_dim, return_sequences=True, name="{}_reader".format(self.name))
+        self.reader = LSTM(self.output_dim, dropout_W=0.0, dropout_U=0.0, consume_less="gpu",
+                           name="{}_reader".format(self.name))
         # TODO: Let the writer use parameter dropout and any consume_less mode.
         # Setting dropout to 0 here to eliminate the need for constants.
-        # Setting consume_less to mem to eliminate need for preprocessing
-        self.writer = LSTM(self.output_dim, dropout_W=0.0, dropout_U=0.0, consume_less="mem",
+        # Setting consume_less to gpu to eliminate need for preprocessing
+        self.writer = LSTM(self.output_dim, dropout_W=0.0, dropout_U=0.0, consume_less="gpu",
                            name="{}_writer".format(self.name))
         self.composer = Dense(self.output_dim * 2, activation=self.composer_activation,
                               name="{}_composer".format(self.name))
@@ -74,7 +75,6 @@ class NSE(Layer):
     def build(self, input_shape):
         self.input_spec = [InputSpec(shape=input_shape)]
         input_dim = input_shape[-1]
-        assert self.reader.return_sequences, "The reader has to return sequences!"
         reader_input_shape = self.get_reader_input_shape(input_shape)
         print >>sys.stderr, "NSE reader input shape:", reader_input_shape 
         writer_input_shape = (input_shape[0], 1, self.output_dim * 2)  # Will process one timestep at a time
@@ -95,15 +95,16 @@ class NSE(Layer):
             self.set_weights(self.initial_weights)
             del self.initial_weights
 
-    def read(self, nse_input, input_mask=None):
+    def get_initial_states(self, nse_input, input_mask=None):
         '''
-        This method produces the 'read' output (equation 1 in the paper) for all timesteps
+        This method produces the 'read' mask for all timesteps
         and initializes the memory slot mem_0.
 
         Input: nse_input (batch_size, input_length, input_dim)
-        Outputs:
-            o (batch_size, input_length, output_dim)
-            flattened_mem_0 (batch_size, input_length * output_dim)
+        Output: list[Tensors]:
+                h_0 (batch_size, output_dim)
+                c_0 (batch_size, output_dim)
+                flattened_mem_0 (batch_size, input_length * output_dim)
  
         While this method simply copies input to mem_0, variants that inherit from this class can do
         something fancier.
@@ -111,9 +112,9 @@ class NSE(Layer):
         input_to_read = nse_input
         mem_0 = input_to_read
         flattened_mem_0 = K.batch_flatten(mem_0)
-        o = self.reader.call(input_to_read, input_mask)
-        o_mask = self.reader.compute_mask(input_to_read, input_mask)
-        return o, [flattened_mem_0], o_mask
+        initial_states = self.reader.get_initial_states(nse_input)
+        initial_states += [flattened_mem_0]
+        return initial_states
 
     @staticmethod
     def summarize_memory(o_t, mem_tm1):
@@ -150,14 +151,20 @@ class NSE(Layer):
         mem_t = mem_tm1 * (1 - tiled_z_t) + tiled_h_t * tiled_z_t  # (batch_size, input_length, output_dim)
         return mem_t
 
-    def compose_and_write_step(self, o_t, states):
+    @staticmethod
+    def split_states(states):
+        # This method is a helper for the step function to split the states into reader states, memory and
+        # awrite states.
+        return states[:2], states[2], states[3:]
+
+    def step(self, input_t, states):
         '''
         This method is a step function that updates the memory at each time step and produces
-        a new output vector (Equations 2 to 6 in the paper).
+        a new output vector (Equations 1 to 6 in the paper).
         The memory_state is flattened because K.rnn requires all states to be of the same shape as the output,
         because it uses the same mask for the output and the states.
         Inputs:
-            o_t (batch_size, output_dim)
+            input_t (batch_size, input_dim)
             states (list[Tensor])
                 flattened_mem_tm1 (batch_size, input_length * output_dim)
                 writer_h_tm1 (batch_size, output_dim)
@@ -167,34 +174,43 @@ class NSE(Layer):
             h_t (batch_size, output_dim)
             flattened_mem_t (batch_size, input_length * output_dim)
         '''
-        flattened_mem_tm1, writer_h_tm1, writer_c_tm1 = states
+        reader_states, flattened_mem_tm1, writer_states = self.split_states(states)
         input_mem_shape = K.shape(flattened_mem_tm1)
         mem_tm1_shape = (input_mem_shape[0], input_mem_shape[1]/self.output_dim, self.output_dim)
         mem_tm1 = K.reshape(flattened_mem_tm1, mem_tm1_shape)  # (batch_size, input_length, output_dim)
+        reader_constants = self.reader.get_constants(input_t)  # Does not depend on input_t, see init.
+        reader_states = reader_states[:2] + reader_constants + reader_states[2:]
+        o_t, [_, reader_c_t] = self.reader.step(input_t, reader_states)  # o_t, reader_c_t: (batch_size, output_dim)
         z_t, m_rt = self.summarize_memory(o_t, mem_tm1)
         c_t = self.compose_memory_and_output([o_t, m_rt])
         # Collecting the necessary variables to directly call writer's step function.
         writer_constants = self.writer.get_constants(c_t)  # returns dropouts for W and U (all 1s, see init)
-        writer_states = [writer_h_tm1, writer_c_tm1] + writer_constants
+        writer_states += writer_constants
         # Making a call to writer's step function, Equation 5
         h_t, [_, writer_c_t] = self.writer.step(c_t, writer_states)  # h_t, writer_c_t: (batch_size, output_dim)
         mem_t = self.update_memory(z_t, h_t, mem_tm1)
         flattened_mem_t = K.batch_flatten(mem_t)
-        return h_t, [flattened_mem_t, h_t, writer_c_t]
+        return h_t, [o_t, reader_c_t, flattened_mem_t, h_t, writer_c_t]
+
+    def loop(self, x, initial_states, mask):
+        # This is a separate method because Ontoaware variants will have to override this to make a call
+        # to changingdim rnn.
+        last_output, all_outputs, last_states = K.rnn(self.step, x, initial_states, mask=mask)
+        return last_output, all_outputs, last_states
 
     def call(self, x, mask=None):
         # input_shape = (batch_size, input_length, input_dim). This needs to be defined in build.
-        read_output, initial_memory_states, output_mask = self.read(x, mask)
-        initial_write_states = self.writer.get_initial_states(read_output)  # h_0 and c_0 of the writer LSTM
-        initial_states = initial_memory_states + initial_write_states
+        initial_read_states = self.get_initial_states(x, mask)
+        fake_writer_input = K.expand_dims(initial_read_states[0], dim=1)  # (batch_size, 1, output_dim)
+        initial_write_states = self.writer.get_initial_states(fake_writer_input)  # h_0 and c_0 of the writer LSTM
+        initial_states = initial_read_states + initial_write_states
         # last_output: (batch_size, output_dim)
         # all_outputs: (batch_size, input_length, output_dim)
         # last_states:
         #       last_memory_state: (batch_size, input_length, output_dim)
         #       last_output
         #       last_writer_ct
-        last_output, all_outputs, last_states = K.rnn(self.compose_and_write_step, read_output, initial_states,
-                                                      mask=output_mask)
+        last_output, all_outputs, last_states = self.loop(x, initial_states, mask)
         last_memory = last_states[0]
         if self.return_mode == "last_output":
             return last_output
@@ -238,7 +254,7 @@ class MultipleMemoryAccessNSE(NSE):
         return (input_shape[0], self.output_dim * 3)
 
     @overrides
-    def read(self, nse_input, input_mask=None):
+    def get_initial_states(self, nse_input, input_mask=None):
         '''
         Read input in MMA-NSE will be of shape (batch_size, read_input_length*2, input_dim), a concatenation of
         the actual input to this NSE and the output from a different NSE. The latter will be used to initialize
@@ -250,17 +266,23 @@ class MultipleMemoryAccessNSE(NSE):
         input_to_read = nse_input[:, :read_input_length, :]
         initial_shared_memory = K.batch_flatten(nse_input[:, read_input_length:, :])
         mem_0 = K.batch_flatten(input_to_read)
-        o = self.reader.call(input_to_read, input_mask)
         o_mask = self.reader.compute_mask(input_to_read, input_mask)
-        return o, [mem_0, initial_shared_memory], o_mask
+        reader_states = self.reader.get_initial_states(nse_input)
+        initial_states = reader_states + [mem_0, initial_shared_memory]
+        return initial_states, o_mask
 
     @overrides
-    def compose_and_write_step(self, o_t, states):
-        flattened_mem_tm1, flattened_shared_mem_tm1, writer_h_tm1, writer_c_tm1 = states
+    def step(self, input_t, states):
+        reader_states = states[:2]
+        flattened_mem_tm1, flattened_shared_mem_tm1 = states[2:4]
+        writer_h_tm1, writer_c_tm1 = states[4:]
         input_mem_shape = K.shape(flattened_mem_tm1)
         mem_shape = (input_mem_shape[0], input_mem_shape[1]/self.output_dim, self.output_dim)
         mem_tm1 = K.reshape(flattened_mem_tm1, mem_shape)
         shared_mem_tm1 = K.reshape(flattened_shared_mem_tm1, mem_shape)
+        reader_constants = self.reader.get_constants(input_t)
+        reader_states += reader_constants
+        o_t, [_, reader_c_t] = self.reader.step(input_t, reader_states)
         z_t, m_rt = self.summarize_memory(o_t, mem_tm1)
         shared_z_t, shared_m_rt = self.summarize_memory(o_t, shared_mem_tm1)
         c_t = self.compose_memory_and_output([o_t, m_rt, shared_m_rt])
@@ -271,7 +293,7 @@ class MultipleMemoryAccessNSE(NSE):
         h_t, [_, writer_c_t] = self.writer.step(c_t, writer_states)  # h_t, writer_c_t: (batch_size, output_dim)
         mem_t = self.update_memory(z_t, h_t, mem_tm1)
         shared_mem_t = self.update_memory(shared_z_t, h_t, shared_mem_tm1)
-        return h_t, [K.batch_flatten(mem_t), K.batch_flatten(shared_mem_t), h_t, writer_c_t]
+        return h_t, [o_t, reader_c_t, K.batch_flatten(mem_t), K.batch_flatten(shared_mem_t), h_t, writer_c_t]
 
 
 class InputMemoryMerger(Layer):

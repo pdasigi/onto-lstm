@@ -137,7 +137,7 @@ class OntoAttentionLSTM(LSTM):
             
         weighted_product = x_synset_embeddings * K.expand_dims(sense_hyp_attention)  # (samples, senses, hyps, input_dim)
         # Weighted average, summing over senses and hyps
-        lstm_input_t = K.sum(weighted_product, axis=(1,2))  # (samples, input_dim)
+        lstm_input_t = K.sum(weighted_product, axis=(1, 2))  # (samples, input_dim)
         # Now pass the computed lstm_input to LSTM's step function to get current h and c.
         h, [_, c] = super(OntoAttentionLSTM, self).step(lstm_input_t, lstm_states)
         
@@ -152,6 +152,8 @@ class OntoAttentionLSTM(LSTM):
 
     def get_constants(self, x):
         # Reimplementing because ndim of x is 5. (samples, timesteps, num_senses, num_hyps, input_dim)
+        if K.ndim(x) == 4:
+            x = K.expand_dims(x)
         sense_hyp_stripped_x = x[:, :, 0, 0, :-1]  # (samples, timesteps, input_dim), just like LSTM input.
         # We need the same constants as regular LSTM.
         lstm_constants = super(OntoAttentionLSTM, self).get_constants(sense_hyp_stripped_x)
@@ -221,14 +223,15 @@ class OntoAttentionNSE(NSE):
         # TODO: Define an attention output method that rebuilds the reader.
         self.return_attention = return_attention
         self.reader = OntoAttentionLSTM(self.output_dim, num_senses, num_hyps, use_attention=use_attention,
-                                        return_sequences=True, return_attention=False)
+                                        consume_less='gpu', return_attention=False)
 
     def compute_mask(self, input, mask):
         reader_mask = self.reader.compute_mask(input, mask)
         # The input mask is of ndim 5. Pass the output mask of the reader to NSE instead of the input mask.
         return super(OntoAttentionNSE, self).compute_mask(input, reader_mask)
 
-    def read(self, onto_nse_input, input_mask=None):
+    @overrides
+    def get_initial_states(self, onto_nse_input, input_mask=None):
         input_to_read = onto_nse_input  # (batch_size, num_words, num_senses, num_hyps, output_dim + 1)
         memory_input = input_to_read[:, :, :, :, :-1]  # (bs, words, senses, hyps, output_dim)
         if input_mask is None:
@@ -240,12 +243,33 @@ class OntoAttentionNSE(NSE):
             memory_mask = K.cast(memory_mask / (K.sum(memory_mask) + K.epsilon()), 'float32')
             mem_0 = K.sum(memory_input * memory_mask, axis=(2,3))  # (batch_size, num_words, output_dim)
         flattened_mem_0 = K.batch_flatten(mem_0)
-        o = self.reader.call(input_to_read, input_mask)
-        output_mask = self.reader.compute_mask(input_to_read, input_mask)
-        return o, [flattened_mem_0], output_mask
+        initial_states = self.reader.get_initial_states(input_to_read)
+        initial_states += [flattened_mem_0]
+        return initial_states
+
+    @staticmethod
+    def split_states(states):
+        # OntoLSTM also has the mask as one of its states (the last one, because of how changing_ndim_rnn is
+        # defined).
+        mask = states[-1]
+        return [states[0], states[1], mask], states[2], [states[3], states[4]]
+
+    @overrides
+    def loop(self, x, initial_states, mask):
+        # Overriding this method because we have to make a call to changing_ndim_rnn.
+        input_shape = self.input_spec[0].shape
+        constants = self.reader.get_constants(x)
+        preprocessed_input = self.reader.preprocess_input(x)
+        last_output, outputs, states = changing_ndim_rnn(self.step, preprocessed_input,
+                                                         initial_states,
+                                                         mask=mask,
+                                                         constants=constants,
+                                                         input_length=input_shape[1],
+                                                         eliminate_mask_dims=(1, 2))
+        return last_output, outputs, states
 
 
 class MultipleMemoryAccessOntoNSE(MultipleMemoryAccessNSE):
-    @overrides
-    def read(self, onto_nse_input, input_mask=None):
+    #@overrides
+    def get_initial_states(self, onto_nse_input, input_mask=None):
         pass

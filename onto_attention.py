@@ -268,6 +268,16 @@ class OntoAttentionNSE(NSE):
                                                          eliminate_mask_dims=(1, 2))
         return last_output, outputs, states
 
+    @overrides
+    def get_config(self):
+        config = {"num_senses": self.num_senses,
+                  "num_hyps": self.num_hyps,
+                  "use_attention": self.use_attention,
+                  "return_attention": return_attention}
+        base_config = super(OntoaAttentionNSE, self).get_config()
+        config.update(base_config)
+        return config
+
 
 class MultipleMemoryAccessOntoNSE(MultipleMemoryAccessNSE):
     #@overrides

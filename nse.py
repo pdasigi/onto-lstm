@@ -358,3 +358,9 @@ class OutputSplitter(Layer):
             return inputs[:, 0, :]  # (batch_size, output_dim)
         else:
             return inputs[:, 1:, :]  # (batch_size, nse_input_length, output_dim)
+
+    def get_config(self):
+        config = {"return_mode": self.return_mode}
+        base_config = super(OutputSplitter, self).get_config()
+        config.update(base_config)
+        return config

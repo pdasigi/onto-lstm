@@ -394,6 +394,7 @@ class OntoNSEEntailmentModel(OntoLSTMEntailmentModel):
     def __init__(self, **kwargs):
         super(OntoNSEEntailmentModel, self).__init__(**kwargs)
         tune_embedding = kwargs["tune_embedding"]
+        self.custom_objects = {"OntoAttentionNSE": OntoAttentionNSE, "OntoAwareEmbedding": OntoAwareEmbedding}
         self.model_name_prefix = "ontonse_ent_att=%s_senses=%d_hyps=%d_sense-priors=%s_tune-embedding=%s" % (
             str(self.use_attention), self.num_senses, self.num_hyps, str(self.set_sense_priors),
             str(tune_embedding))

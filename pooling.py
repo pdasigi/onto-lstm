@@ -71,6 +71,10 @@ class IntraAttention(AveragePooling):
         # (batch_size, input_length, input_dim)
         tiled_mean = K.permute_dimensions(K.dot(K.expand_dims(mean), ones), (0, 2, 1))
         if mask is not None:
+            if K.ndim(mask) > K.ndim(x):
+                # Assuming this is because of the bug in Bidirectional. Temporary fix follows.
+                # TODO: Fix Bidirectional.
+                mask = K.any(mask, axis=(-2, -1))
             if K.ndim(mask) < K.ndim(x):
                 mask = K.expand_dims(mask)
             x = K.switch(mask, x, K.zeros_like(x))

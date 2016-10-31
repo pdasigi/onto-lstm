@@ -166,7 +166,7 @@ class OntoAttentionLSTM(LSTM):
             # Get rid of syn and hyp dimensions
             # input mask's shape: (batch_size, num_words, num_hyps, num_senses)
             # output mask's shape: (batch_size, num_words)
-            return K.sum(mask, axis=(-2, -1))
+            return K.any(mask, axis=(-2, -1))
         else:
             return None
 

@@ -39,8 +39,7 @@ class IntraAttention(AveragePooling):
     from each timestep is to the mean.
     '''
     def __init__(self, init='uniform', projection_dim=50, weights=None, **kwargs):
-        if weights is not None:
-            self.intra_attention_weights = weights
+        self.intra_attention_weights = weights
         self.init = initializations.get(init)
         self.projection_dim = projection_dim
         super(IntraAttention, self).__init__(**kwargs)

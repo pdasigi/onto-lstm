@@ -28,9 +28,16 @@ class AveragePooling(Layer):
             return K.mean(x, axis=1)  # (batch_size, input_dim)
         else:
             # This is to remove padding from the computational graph.
-            masked_input = K.switch(K.expand_dims(mask), x, K.zeros_like(x))
+            if K.ndim(mask) > K.ndim(x):
+                # This is due to the bug in Bidirectional that is passing the input mask
+                # instead of computing output mask.
+                # TODO: Fix the implementation of Bidirectional.
+                mask = K.any(mask, axis=(-2, -1))
+            if K.ndim(mask) < K.ndim(x):
+                mask = K.expand_dims(mask)
+            masked_input = K.switch(mask, x, K.zeros_like(x))
             weights = K.cast(mask / (K.sum(mask) + K.epsilon()), 'float32')
-            return K.sum(masked_input * K.expand_dims(weights), axis=1)  # (batch_size, input_dim)
+            return K.sum(masked_input * weights, axis=1)  # (batch_size, input_dim)
 
 
 class IntraAttention(AveragePooling):
@@ -64,7 +71,9 @@ class IntraAttention(AveragePooling):
         # (batch_size, input_length, input_dim)
         tiled_mean = K.permute_dimensions(K.dot(K.expand_dims(mean), ones), (0, 2, 1))
         if mask is not None:
-            x = K.switch(K.expand_dims(mask), x, K.zeros_like(x))
+            if K.ndim(mask) < K.ndim(x):
+                mask = K.expand_dims(mask)
+            x = K.switch(mask, x, K.zeros_like(x))
         # (batch_size, input_length, proj_dim)
         projected_combination = K.tanh(K.dot(x, self.vector_projector) + K.dot(tiled_mean, self.mean_projector))
         scores = K.dot(projected_combination, self.scorer)  # (batch_size, input_length)

@@ -191,7 +191,12 @@ class LSTMEntailmentModel(EntailmentModel):
     def __init__(self, **kwargs):
         super(LSTMEntailmentModel, self).__init__(**kwargs)
         self.model_name_prefix = "lstm_ent_bi=%s_pool-att=%s" % (self.bidirectional, self.intra_attention)
-        self.custom_objects = {} 
+        self.custom_objects = {}
+        if self.bidirectional:
+            if self.intra_attention:
+                self.custom_objects["IntraAttention"] = IntraAttention
+            else: 
+                self.custom_objects["AveragePooling"] = AveragePooling
 
     def _get_encoded_sentence_variables(self, sent1_input_layer, sent2_input_layer, dropout,
                                         embedding_file, tune_embedding):
@@ -246,6 +251,11 @@ class OntoLSTMEntailmentModel(EntailmentModel):
             str(self.use_attention), self.num_senses, self.num_hyps, str(set_sense_priors), str(tune_embedding),
             str(self.bidirectional), str(self.intra_attention))
         self.custom_objects = {"OntoAttentionLSTM": OntoAttentionLSTM, "OntoAwareEmbedding": OntoAwareEmbedding}
+        if self.bidirectional:
+            if self.intra_attention:
+                self.custom_objects["IntraAttention"] = IntraAttention
+            else: 
+                self.custom_objects["AveragePooling"] = AveragePooling
 
     def _get_encoded_sentence_variables(self, sent1_input_layer, sent2_input_layer, dropout,
                                         embedding_file, tune_embedding):

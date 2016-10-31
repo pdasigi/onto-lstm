@@ -77,7 +77,7 @@ class IntraAttention(AveragePooling):
         # (batch_size, input_length, proj_dim)
         projected_combination = K.tanh(K.dot(x, self.vector_projector) + K.dot(tiled_mean, self.mean_projector))
         scores = K.dot(projected_combination, self.scorer)  # (batch_size, input_length)
-        weights = K.softmax(scores)  # (batch_size, input_length)
+        weights = K.softmax(K.squeeze(scores, axis=-1))  # (batch_size, input_length)
         attended_x = K.sum(K.expand_dims(weights) * x, axis=1)  # (batch_size, input_dim)
         return attended_x
 

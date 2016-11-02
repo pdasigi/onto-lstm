@@ -31,7 +31,7 @@ class EntailmentModel(object):
         self.custom_objects = None
 
     def train(self, train_inputs, train_labels, num_epochs=20, mlp_size=1024, mlp_activation='relu',
-              dropout=None, embedding_file=None, tune_embedding=True,
+              dropout=None, embedding_file=None, tune_embedding=True, num_mlp_layers=2,
               patience=5):
         '''
         train_inputs (list(numpy_array)): The two sentence inputs
@@ -57,11 +57,16 @@ class EntailmentModel(object):
                               output_shape=lambda l: l[0])
         # Use heuristic from Mou et al. (2015) to get final merged representation
         merged_sent_rep = merge([concat_sent_rep, mul_sent_rep, diff_sent_rep], mode='concat')
-        # TODO: Make the number of mlp layers a hyperparameter and expose it.
-        mlp_layer1 = Dense(output_dim=mlp_size, activation=mlp_activation)
-        mlp_layer2 = Dense(output_dim=mlp_size, activation=mlp_activation)
-        softmax = Dense(output_dim=num_label_types, activation='softmax')
-        label_probs = softmax(mlp_layer2(mlp_layer1(merged_sent_rep)))
+        current_projection = merged_sent_rep
+        for i in range(num_mlp_layers):
+            mlp_layer_i = Dense(output_dim=mlp_size, activation=mlp_activation,
+                                name="%s_layer_%d" % (mlp_activation, i))
+            current_projection = mlp_layer_i(current_projection)
+        if dropout is not None:
+            if "output" in dropout:
+                current_projection = Dropout(dropout["output"])(current_projection)
+        softmax = Dense(output_dim=num_label_types, activation='softmax', name='softmax_layer')
+        label_probs = softmax(current_projection)
         model = Model(input=[sent1_input_layer, sent2_input_layer], output=label_probs)
         model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
         self.model = model
@@ -465,9 +470,11 @@ def main():
     argparser.add_argument('--tune_embedding', help="Fine tune pretrained embedding (if provided)", action='store_true')
     argparser.add_argument('--num_epochs', type=int, help="Number of epochs (default 20)", default=20)
     argparser.add_argument('--mlp_size', type=int, help="Size of each layer in MLP (default 1024)", default=1024)
+    argparser.add_argument('--num_mlp_layers', type=int, help="Number of mlp layers (default 2)", default=2)
     argparser.add_argument('--mlp_activation', type=str, help="MLP activation (default relu)", default='relu')
-    argparser.add_argument('--embedding_dropout', type=float, help="Dropout after embedding", default=0.5)
-    argparser.add_argument('--encoder_dropout', type=float, help="Dropout after encoder", default=0.2)
+    argparser.add_argument('--embedding_dropout', type=float, help="Dropout after embedding", default=0.0)
+    argparser.add_argument('--encoder_dropout', type=float, help="Dropout after encoder", default=0.0)
+    argparser.add_argument('--output_dropout', type=float, help="Dropout after encoder", default=0.0)
     args = argparser.parse_args()
     if args.encoder == "lstm":
         if args.onto_aware:
@@ -497,18 +504,20 @@ def main():
         entailment_model.load_model()
     else:
         train_inputs, train_labels = entailment_model.process_train_data(args.train_file, onto_aware=args.onto_aware)
-        dropout = {"embedding": args.embedding_dropout, "encoder": args.encoder_dropout}
+        dropout = {"embedding": args.embedding_dropout,
+                   "encoder": args.encoder_dropout,
+                   "output": args.output_dropout}
         if args.onto_aware:
             entailment_model.train(train_inputs, train_labels, num_epochs=args.num_epochs,
                                    mlp_size=args.mlp_size, mlp_activation=args.mlp_activation,
-                                   dropout=dropout, embedding_file=args.embedding_file,
-                                   tune_embedding=args.tune_embedding)
+                                   dropout=dropout, num_mlp_layers=args.num_mlp_layers,
+                                   embedding_file=args.embedding_file, tune_embedding=args.tune_embedding)
         else:
             # Same as above, except no attention.
             entailment_model.train(train_inputs, train_labels, num_epochs=args.num_epochs,
                                    mlp_size=args.mlp_size, mlp_activation=args.mlp_activation,
-                                   dropout=dropout, embedding_file=args.embedding_file, 
-                                   tune_embedding=args.tune_embedding)
+                                   dropout=dropout, num_mlp_layers=args.num_mlp_layers,
+                                   embedding_file=args.embedding_file, tune_embedding=args.tune_embedding)
     
     ## Test model
     if args.test_file is not None:

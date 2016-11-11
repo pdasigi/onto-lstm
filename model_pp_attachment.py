@@ -346,15 +346,9 @@ def main():
                                                                    for_test=False)
         dropout = {"embedding": args.embedding_dropout,
                    "encoder": args.encoder_dropout}
-        if args.onto_aware:
-            attachment_model.train(train_inputs, train_labels, num_epochs=args.num_epochs,
-                                   dropout=dropout, num_mlp_layers=args.num_mlp_layers, use_attention=args.use_attention,
-                                   embedding_file=args.embedding_file)
-        else:
-            # Same as above, except no attention.
-            attachment_model.train(train_inputs, train_labels, num_epochs=args.num_epochs,
-                                   dropout=dropout, num_mlp_layers=args.num_mlp_layers,
-                                   embedding_file=args.embedding_file)
+        attachment_model.train(train_inputs, train_labels, num_epochs=args.num_epochs,
+                               dropout=dropout, num_mlp_layers=args.num_mlp_layers,
+                               embedding_file=args.embedding_file)
     
     ## Test model
     if args.test_file is not None:

@@ -65,3 +65,11 @@ class AttachmentPredictor(Layer):
             exp_sum = K.cast(K.expand_dims(K.sum(masked_exp_scores, axis=1) + K.epsilon()), 'float32')
             attachment_probabilities = masked_exp_scores / exp_sum  # (batch_size, head_size)
         return attachment_probabilities
+
+    def get_config(self):
+        config = {"num_hidden_layers": self.num_hidden_layers,
+                  "proj_dim": self.proj_dim,
+                  "init": self.init.__name__}
+        base_config = super(AttachmentPredictor, self).get_config()
+        config.update(base_config)
+        return config

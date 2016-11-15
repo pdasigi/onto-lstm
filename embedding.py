@@ -41,6 +41,7 @@ class OntoAwareEmbedding(Embedding):
         if self.set_sense_priors:
             self.sense_priors = self._get_initial_sense_priors((self.word_index_size, 1), name='{}_sense_priors'.format(self.name))
         else:
+            # OntoLSTM makes sense proabilities uniform if the passed sense parameters are zero.
             self.sense_priors = K.zeros((self.word_index_size, 1))  # uniform sense probs
         # Keeping aside the initial weights to not let Embedding set them. It wouldn't know what sense priors are.
         if self.initial_weights is not None:

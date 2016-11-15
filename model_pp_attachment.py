@@ -50,7 +50,7 @@ class PPAttachmentModel(object):
         num_worse_epochs = 0
         for epoch_id in range(num_epochs):
             print >>sys.stderr, "Epoch: %d" % epoch_id
-            history = model.fit(train_inputs, train_labels, validation_split=0.1, nb_epoch=1)
+            history = model.fit(train_inputs, train_labels, validation_split=0.05, nb_epoch=1)
             validation_accuracy = history.history['val_acc'][0]  # history['val_acc'] is a list of size nb_epoch
             if validation_accuracy > best_accuracy:
                 self.save_model(epoch_id)
@@ -212,7 +212,7 @@ class OntoLSTMAttachmentModel(PPAttachmentModel):
             embedding = self.data_processor.get_embedding_matrix(embedding_file, onto_aware=True)
             # Put the embedding in a list for Keras to treat it as initial weights of the embedding layer.
             embedding_weights = [embedding]
-            if self.set_sense_priors:
+            if self.set_sense_priors and self.tune_embedding:
                 initial_sense_prior_parameters = numpy.random.uniform(low=0.01, high=0.99, size=(word_vocab_size, 1))
                 embedding_weights.append(initial_sense_prior_parameters)
         embedding_layer = OntoAwareEmbedding(word_vocab_size, synset_vocab_size, self.embed_dim,
@@ -324,7 +324,7 @@ def main():
     argparser.add_argument('--attention_output', type=str, help="Print attention values of the validation data in the given file")
     argparser.add_argument('--tune_embedding', help="Fine tune pretrained embedding (if provided)", action='store_true')
     argparser.add_argument('--num_epochs', type=int, help="Number of epochs (default 20)", default=20)
-    argparser.add_argument('--num_mlp_layers', type=int, help="Number of mlp layers (default 2)", default=2)
+    argparser.add_argument('--num_mlp_layers', type=int, help="Number of mlp layers (default 0)", default=0)
     argparser.add_argument('--embedding_dropout', type=float, help="Dropout after embedding", default=0.0)
     argparser.add_argument('--encoder_dropout', type=float, help="Dropout after encoder", default=0.0)
     args = argparser.parse_args()

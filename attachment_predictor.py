@@ -9,7 +9,7 @@ class AttachmentPredictor(Layer):
 
     This layer takes as input a sequence output from an RNN, and suumes that the last two timesteps correspond to the PP.
     '''
-    def __init__(self, num_hidden_layers, proj_dim=20, init='uniform', **kwargs):
+    def __init__(self, num_hidden_layers, proj_dim=None, init='uniform', **kwargs):
         self.supports_masking = True
         self.num_hidden_layers = num_hidden_layers
         self.proj_dim = proj_dim
@@ -18,14 +18,16 @@ class AttachmentPredictor(Layer):
 
     def build(self, input_shape):
         input_dim = input_shape[-1]
+        if self.proj_dim is None:
+            self.proj_dim = int(input_dim / 2)
         self.proj_head = self.init((input_dim, self.proj_dim), name='{}_proj_head'.format(self.name))
         self.proj_prep = self.init((input_dim, self.proj_dim), name='{}_proj_prep'.format(self.name))
         self.proj_child = self.init((input_dim, self.proj_dim), name='{}_proj_child'.format(self.name))
         self.trainable_weights = [self.proj_head, self.proj_prep, self.proj_child]
+        self.hidden_layers = []
         if self.num_hidden_layers > 0:
             # This means we have to pass the composed representation through an MLP instead of directly computing
             # scores.
-            self.hidden_layers = []
             for i in range(self.num_hidden_layers):
                 hidden_layer = self.init((self.proj_dim, self.proj_dim), name='%s_hidden_layer_%d' % (self.name, i))
                 self.hidden_layers.append(hidden_layer)
@@ -56,6 +58,11 @@ class AttachmentPredictor(Layer):
         if mask is None:
             attachment_probabilities = K.softmax(head_word_scores)  # (batch_size, head_size)
         else:
+            if K.ndim(mask) > 2:
+                # This means this layer came after a Bidirectional layer. Keras has this bug which
+                # concatenates input masks instead of output masks.
+                # TODO: Fix Bidirectional instead.
+                mask = K.any(mask, axis=(-2, -1))
             # We need to do a masked softmax.
             exp_scores = K.exp(head_word_scores)  # (batch_size, head_size)
             head_mask = mask[:, :-2]  # (batch_size, head_size)

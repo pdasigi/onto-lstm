@@ -2,11 +2,10 @@ import sys
 import argparse
 import pickle
 import random
-import codecs
 import numpy
 
 from keras.models import Model, load_model
-from keras.layers import Dense, Dropout, Embedding, Input, LSTM, Bidirectional
+from keras.layers import Dropout, Embedding, Input, LSTM, Bidirectional
 
 from embedding import OntoAwareEmbedding
 from index_data import DataProcessor
@@ -26,9 +25,9 @@ class PPAttachmentModel(object):
         self.custom_objects = {"AttachmentPredictor": AttachmentPredictor}
 
     def train(self, train_inputs, train_labels, num_epochs=20, embedding_file=None, num_mlp_layers=0,
-              dropout=None, patience=5):
+              dropout=None, patience=6):
         '''
-        train_inputs (numpy_array): Indexed Head + preposition + child 
+        train_inputs (numpy_array): Indexed Head + preposition + child
         train_labels (numpy_array): One-hot matrix indicating labels
         num_epochs (int): Maximum number of epochs to run
         embedding (numpy): Optional pretrained embedding
@@ -36,10 +35,9 @@ class PPAttachmentModel(object):
         dropout (dict): Dict containing dropout values after "embedding" and "encoder"
         patience (int): Early stopping patience
         '''
-        softmax_size = train_labels.shape[1]  # train_labels is of shape (num_samples, softmax_size)
         phrase_input_layer = Input(name='phrase', shape=train_inputs.shape[1:], dtype='int32')
         encoded_phrase = self._get_encoded_phrase(phrase_input_layer, dropout, embedding_file)
-        attachment_probs = AttachmentPredictor(name='attachment_predictor',
+        attachment_probs = AttachmentPredictor(name='attachment_predictor', proj_dim=20,
                                                num_hidden_layers=num_mlp_layers)(encoded_phrase)
         model = Model(input=phrase_input_layer, output=attachment_probs)
         model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
@@ -121,7 +119,17 @@ class PPAttachmentModel(object):
         metrics = self.model.evaluate(inputs, targets)
         print >>sys.stderr, "Test accuracy: %.4f" % (metrics[1])  # The first metric is loss.
         predictions = numpy.argmax(self.model.predict(inputs), axis=1)
-        return predictions
+        test_output_file = open("%s.predictions" % self.model_name_prefix, "w")
+        for input_indices, prediction in zip(inputs, predictions):
+            # The predictions are indices of words in padded sentences. We need to readjust them.
+            padding_length = 0
+            for index in input_indices: 
+                if numpy.all(index == 0):
+                    padding_length += 1
+                else:
+                    break
+            prediction = prediction - padding_length + 1  # +1 because the indices start at 1.
+            print >>test_output_file, prediction
 
     def save_model(self, epoch):
         '''
@@ -336,7 +344,8 @@ def main():
                                                    bidirectional=args.bidirectional,
                                                    tune_embedding=args.tune_embedding)
     else:
-        attachment_model = LSTMAttachmentModel(embed_dim=args.embed_dim, bidirectional=args.bidirectional)
+        attachment_model = LSTMAttachmentModel(embed_dim=args.embed_dim, bidirectional=args.bidirectional,
+                                               tune_embedding=args.tune_embedding)
 
     ## Train model or load trained model
     if args.train_file is None:
@@ -354,7 +363,7 @@ def main():
     if args.test_file is not None:
         test_inputs, test_labels = attachment_model.process_data(args.test_file, onto_aware=args.onto_aware,
                                                                  for_test=True)
-        test_predictions = attachment_model.test(test_inputs, test_labels)
+        attachment_model.test(test_inputs, test_labels)
         if args.attention_output is not None:
             raise NotImplementedError
             #attachment_model.print_attention_values(args.test_file, test_inputs, args.attention_output)

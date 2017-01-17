@@ -1,3 +1,5 @@
+import sys
+
 from keras.engine import Layer
 from keras import initializations
 from keras import backend as K
@@ -7,9 +9,15 @@ class AttachmentPredictor(Layer):
     AttachmentPredictor is a layer that takes an encoded representation of a phrase that ends with a preposition
     phrase (preposition followed by a noun) and predicts which of the words that come before the PP it attaches to.
 
-    This layer takes as input a sequence output from an RNN, and suumes that the last two timesteps correspond to the PP.
+    This layer takes as input a sequence output from an RNN, and suumes that the last two timesteps correspond to
+    the PP.
     '''
-    def __init__(self, num_hidden_layers, proj_dim=None, init='uniform', **kwargs):
+    def __init__(self, num_hidden_layers, proj_dim=None, init='uniform', composition_type='HPCT', **kwargs):
+        # The composition types are taken from Belinkov et al.'s TACL 2014 paper:
+        # HC: Head-Child; HPC: Head-Prep-Child; HPCT: Head-Prep-Child-Ternary.
+        assert composition_type in ['HC', 'HPC', 'HPCT'], "Unknown composition type: %s" % composition_type
+        self.composition_type = composition_type
+        print >>sys.stderr, "Initializing attachment predictor with %s composition" % self.composition_type
         self.supports_masking = True
         self.num_hidden_layers = num_hidden_layers
         self.proj_dim = proj_dim
@@ -51,7 +59,14 @@ class AttachmentPredictor(Layer):
         prep_projection = K.expand_dims(K.dot(prep_encoding, self.proj_prep), dim=1)  # (batch_size, 1, proj_dim)
         child_projection = K.expand_dims(K.dot(child_encoding, self.proj_child), dim=1)  # (batch_size, 1, proj_dim)
         #(batch_size, head_size, proj_dim)
-        composed_projection = K.tanh(head_projection + prep_projection + child_projection)
+        if self.composition_type == 'HPCT':
+            composed_projection = K.tanh(head_projection + prep_projection + child_projection)
+        elif self.composition_type == 'HPC':
+            prep_child_projection = K.tanh(prep_projection + child_projection)  # (batch_size, 1, proj_dim)
+            composed_projection = K.tanh(head_projection + prep_child_projection)
+        else:
+            # Composition type in HC
+            composed_projection = K.tanh(head_projection + child_projection)
         for hidden_layer in self.hidden_layers:
             composed_projection = K.tanh(K.dot(composed_projection, hidden_layer))  # (batch_size, head_size, proj_dim)
         head_word_scores = K.dot(composed_projection, self.scorer)  # (batch_size, head_size)
@@ -76,6 +91,7 @@ class AttachmentPredictor(Layer):
     def get_config(self):
         config = {"num_hidden_layers": self.num_hidden_layers,
                   "proj_dim": self.proj_dim,
+                  "composition_type": self.composition_type,
                   "init": self.init.__name__}
         base_config = super(AttachmentPredictor, self).get_config()
         config.update(base_config)

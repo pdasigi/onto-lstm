@@ -4,7 +4,7 @@ from overrides import overrides
 from keras.layers import LSTM
 from keras.engine import InputSpec
 from keras import backend as K
-from keras_extensions import changing_ndim_rnn
+from keras_extensions import changing_ndim_rnn, switch
 
 from nse import NSE, MultipleMemoryAccessNSE
 
@@ -87,7 +87,7 @@ class OntoAttentionLSTM(LSTM):
         # Taking only the last dimension from all samples. These are the lambda values of exp distributions.
         sense_parameters = K.expand_dims(x_onto_aware[:, 0, 0, -1])  # (samples,1)
         # (1, num_senses)
-        sense_indices = K.cast_to_floatx([[ind for ind in range(self.num_senses)]])
+        sense_indices = K.variable(K.cast_to_floatx([[ind for ind in range(self.num_senses)]]))
         # (samples, num_senses)
         expanded_sense_indices = K.dot(K.ones_like(sense_parameters), sense_indices)
         # Getting the sense probabilities from the exponential distribution. p(x) = \lambda * e^(-\lambda * x)
@@ -95,10 +95,10 @@ class OntoAttentionLSTM(LSTM):
         # If sense priors were not set by the embedding layer, the sense_parameters will be zero, making sense 
         # scores zero. What we really need is sense scores being uniform.
         uniform_scores = K.ones_like(sense_scores) * (1. / self.num_senses)
-        sense_scores = K.switch(K.equal(sense_scores, K.zeros_like(sense_scores)), uniform_scores, sense_scores)
+        sense_scores = switch(K.equal(sense_scores, K.zeros_like(sense_scores)), uniform_scores, sense_scores)
         if mask_i is not None:
             sense_mask = K.sum(K.squeeze(mask_i, axis=-1), axis=2)  # (samples, sense)
-            sense_scores = K.switch(sense_mask, sense_scores, K.zeros_like(sense_scores))
+            sense_scores = switch(sense_mask, sense_scores, K.zeros_like(sense_scores))
         # Renormalizing sense scores to make \sum_{num_senses} p(sense | word) = 1
         sense_probabilities = sense_scores / K.expand_dims(K.sum(sense_scores, axis=1) + K.epsilon())  # (samples, num_senses)
         
@@ -114,7 +114,7 @@ class OntoAttentionLSTM(LSTM):
             hyp_projection2 = K.tanh(K.dot(hyp_projection1, self.hyp_projector2)) # (samples, senses, hyps, output_dim)
             hyp_scores = K.dot(hyp_projection2, self.hyp_scorer) # (samples, senses, hyps)
             if mask_i is not None:
-                hyp_scores = K.switch(K.squeeze(mask_i, axis=-1), hyp_scores, K.zeros_like(hyp_scores))
+                hyp_scores = switch(K.squeeze(mask_i, axis=-1), hyp_scores, K.zeros_like(hyp_scores))
             scores_shape = K.shape(hyp_scores)
             # We need to flatten this because we cannot perform softmax on tensors.
             flattened_scores = K.batch_flatten(hyp_scores)  # (samples, senses*hyps)
@@ -123,7 +123,7 @@ class OntoAttentionLSTM(LSTM):
             # matrix of ones for scores to be consistent (samples, senses, hyps)
             hyp_attention = K.ones_like(x_synset_embeddings)[:, :, :, 0]
             if mask_i is not None:
-                hyp_attention = K.switch(K.squeeze(mask_i, axis=-1), hyp_attention, K.zeros_like(hyp_attention))
+                hyp_attention = switch(K.squeeze(mask_i, axis=-1), hyp_attention, K.zeros_like(hyp_attention))
 
         # Renormalizing hyp attention to get p(hyp | sense, word). Summing over hyps.
         hyp_given_sense_attention = hyp_attention / K.expand_dims(K.sum(hyp_attention, axis=2) + K.epsilon())
@@ -133,7 +133,7 @@ class OntoAttentionLSTM(LSTM):
         if mask_i is not None:
             # Applying the mask on input
             zeros_like_input = K.zeros_like(x_synset_embeddings)  # (samples, senses, hyps, dim)
-            x_synset_embeddings = K.switch(mask_i, x_synset_embeddings, zeros_like_input) 
+            x_synset_embeddings = switch(mask_i, x_synset_embeddings, zeros_like_input) 
             
         weighted_product = x_synset_embeddings * K.expand_dims(sense_hyp_attention)  # (samples, senses, hyps, input_dim)
         # Weighted average, summing over senses and hyps

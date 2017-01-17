@@ -4,6 +4,8 @@ from keras.engine import Layer
 from keras import initializations
 from keras import backend as K
 
+from keras_extensions import switch
+
 class AttachmentPredictor(Layer):
     '''
     AttachmentPredictor is a layer that takes an encoded representation of a phrase that ends with a preposition
@@ -82,7 +84,7 @@ class AttachmentPredictor(Layer):
             exp_scores = K.exp(head_word_scores)  # (batch_size, head_size)
             head_mask = mask[:, :-2]  # (batch_size, head_size)
             # (batch_size, head_size)
-            masked_exp_scores = K.switch(head_mask, exp_scores, K.zeros_like(head_encoding[:, :, 0]))
+            masked_exp_scores = switch(head_mask, exp_scores, K.zeros_like(head_encoding[:, :, 0]))
             # (batch_size, 1). Adding epsilon to avoid divison by 0. But epsilon is float64.
             exp_sum = K.cast(K.expand_dims(K.sum(masked_exp_scores, axis=1) + K.epsilon()), 'float32')
             attachment_probabilities = masked_exp_scores / exp_sum  # (batch_size, head_size)

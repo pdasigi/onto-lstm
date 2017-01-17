@@ -6,6 +6,7 @@ from keras.engine import Layer
 from keras import initializations
 from keras import backend as K
 
+from keras_extensions import switch
 
 class AveragePooling(Layer):
     '''
@@ -35,7 +36,7 @@ class AveragePooling(Layer):
                 mask = K.any(mask, axis=(-2, -1))
             if K.ndim(mask) < K.ndim(x):
                 mask = K.expand_dims(mask)
-            masked_input = K.switch(mask, x, K.zeros_like(x))
+            masked_input = switch(mask, x, K.zeros_like(x))
             weights = K.cast(mask / (K.sum(mask) + K.epsilon()), 'float32')
             return K.sum(masked_input * weights, axis=1)  # (batch_size, input_dim)
 
@@ -77,7 +78,7 @@ class IntraAttention(AveragePooling):
                 mask = K.any(mask, axis=(-2, -1))
             if K.ndim(mask) < K.ndim(x):
                 mask = K.expand_dims(mask)
-            x = K.switch(mask, x, K.zeros_like(x))
+            x = switch(mask, x, K.zeros_like(x))
         # (batch_size, input_length, proj_dim)
         projected_combination = K.tanh(K.dot(x, self.vector_projector) + K.dot(tiled_mean, self.mean_projector))
         scores = K.dot(projected_combination, self.scorer)  # (batch_size, input_length)

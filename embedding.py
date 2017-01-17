@@ -62,18 +62,18 @@ class OntoAwareEmbedding(Embedding):
         x_word_index = x[:, :, 0, -1]  # (num_samples, num_words)
         # (num_samples, num_words, num_senses, num_hyps, embedding_dim)
         synset_embedding = super(OntoAwareEmbedding, self).call(x_synsets, mask=None)
-        # (num_samples, num_words, 1, 1), last to dims to accommodate senses and hyps in tiling
+        # (num_samples, num_words, 1, 1)
         sense_prior_embedding = K.expand_dims(K.gather(self.sense_priors, x_word_index))
         # Now tile sense_prior_embedding and concatenate it with synset_embedding.
         # (num_samples, num_words, num_senses, num_hyps, 1)
-        tiled_sense_prior_embedding = K.expand_dims(K.tile(sense_prior_embedding, (self.num_senses, self.num_hyps)))
+        tiled_sense_prior_embedding = K.expand_dims(K.tile(sense_prior_embedding, (1, 1, self.num_senses, self.num_hyps)))
         synset_embedding_with_priors = K.concatenate([synset_embedding, tiled_sense_prior_embedding])
         return synset_embedding_with_priors
 
     def compute_mask(self, x, mask=None):
         # Since the output dim is different, we need to change the mask size
         embedding_mask = super(OntoAwareEmbedding, self).compute_mask(x, mask)
-        return embedding_mask[:, :, :, :-1]
+        return embedding_mask[:, :, :, :-1] if embedding_mask is not None else None
 
     def get_output_shape_for(self, input_shape):
         return input_shape[:3] + (self.num_hyps, self.embedding_dim+1)

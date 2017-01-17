@@ -1,11 +1,20 @@
 import re
+import os
 import sys
 import gzip
+from xml.etree import ElementTree
+
 import numpy
 from nltk.corpus import wordnet as wn
 
 class DataProcessor(object):
-    def __init__(self, word_syn_cutoff=2, syn_path_cutoff=5):
+    def __init__(self, word_syn_cutoff=2, syn_path_cutoff=5, process_preps=False, prep_senses_dir=None):
+        self.prep_senses = {}
+        self.process_preps = process_preps
+        if process_preps:
+            assert prep_senses_dir is not None, "Preposition senses directory (Semeval 07 data) not passed."
+            print >>sys.stderr, "Including preposition senses as well"
+            self.prep_senses_dir = prep_senses_dir
         self.word_syn_cutoff = word_syn_cutoff
         self.syn_path_cutoff = syn_path_cutoff
 
@@ -25,6 +34,24 @@ class DataProcessor(object):
         self.conc_singletons = set([])
         self.conc_non_singletons = set([])
         self.numpy_rng = numpy.random.RandomState(12345)
+
+    def read_preposition_senses(self):
+        num_senses_per_prep = []
+        for filename in os.listdir(self.prep_senses_dir):
+            if '.defs.xml' in filename:
+                prep_str = filename.replace('.defs.xml', '')
+                xml_root = ElementTree.parse("%s/%s" % (self.prep_senses_dir, filename)).getroot()
+                senses = []
+                for child_el in xml_root.getchildren():
+                    sense_id = child_el.findtext('senseid')
+                    if sense_id is not None:
+                        # This will add strings like 'into-1(1)'
+                        senses.append("%s-%s" % (prep_str, sense_id))
+                num_senses_per_prep.append(len(senses))
+                self.prep_senses[prep_str] = senses
+        num_preps = len(self.prep_senses)
+        print >>sys.stderr, "Read senses for %d prepositions." % num_preps
+        print >>sys.stderr, "Senses per preposition: %f" % (float(sum(num_senses_per_prep))/num_preps)
 
     # TODO: Take a coarse-grained mapping file and implement the following function.
     def map_fine_to_coarse(self, syn_name):
@@ -48,6 +75,12 @@ class DataProcessor(object):
         wrd_lower = word.lower()
         if not pos:
             syns = []
+            if wrd_lower in self.prep_senses:
+                # This is a preposition, and we know its senses.
+                # We'll add each prep sense as a separate hypernym list to be consistent
+                # with the rest of the interface.
+                for sense in self.prep_senses[wrd_lower]:
+                    syns.append([sense])
         else:
             syns = wn.synsets(wrd_lower, pos=pos)
         hypernyms = []
@@ -70,7 +103,12 @@ class DataProcessor(object):
             if len(syns) != 0:
                 pruned_synsets = list(syns) if self.word_syn_cutoff == -1 else syns[:self.word_syn_cutoff]
                 for syn in pruned_synsets:
-                    hypernyms.append(self.get_hypernyms_syn(syn))
+                    # syn is either a WordNet synset or a list if the word is a preposition, and we are
+                    # processing preposition senses as well.
+                    if isinstance(syn, list):
+                        hypernyms.append(syn)
+                    else:
+                        hypernyms.append(self.get_hypernyms_syn(syn))
             else:
                 hypernyms = [[word]]
         return hypernyms
@@ -180,6 +218,8 @@ class DataProcessor(object):
             remove_singletons=False):
         # Read all sentences, prepare input for Keras pipeline.
         # onto_aware = True: output synset indices or vectors instead of those for words.
+        if onto_aware and self.process_preps:
+            self.read_preposition_senses()
         maxsentlen, all_words, all_pos_tags = self.read_sentences(tagged_sentences)
         if remove_singletons:
             # Define singletons here.

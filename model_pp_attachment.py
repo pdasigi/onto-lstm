@@ -37,7 +37,7 @@ class PPAttachmentModel(object):
         '''
         phrase_input_layer = Input(name='phrase', shape=train_inputs.shape[1:], dtype='int32')
         encoded_phrase = self._get_encoded_phrase(phrase_input_layer, dropout, embedding_file)
-        attachment_probs = AttachmentPredictor(name='attachment_predictor', proj_dim=20,
+        attachment_probs = AttachmentPredictor(name='attachment_predictor', proj_dim=20, composition_type='HPCT',
                                                num_hidden_layers=num_mlp_layers)(encoded_phrase)
         model = Model(input=phrase_input_layer, output=attachment_probs)
         model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
@@ -193,17 +193,20 @@ class LSTMAttachmentModel(PPAttachmentModel):
 
 
 class OntoLSTMAttachmentModel(PPAttachmentModel):
-    def __init__(self, num_senses, num_hyps, use_attention, set_sense_priors, **kwargs):
+    def __init__(self, num_senses, num_hyps, use_attention, set_sense_priors, prep_senses_dir, **kwargs):
         super(OntoLSTMAttachmentModel, self).__init__(**kwargs)
         # Set self.data_processor again, now with the right arguments.
-        self.data_processor = DataProcessor(word_syn_cutoff=num_senses, syn_path_cutoff=num_hyps)
+        process_preps = False if prep_senses_dir is None else True
+        self.data_processor = DataProcessor(word_syn_cutoff=num_senses, syn_path_cutoff=num_hyps,
+                                            process_preps=process_preps, prep_senses_dir=prep_senses_dir)
         self.num_senses = num_senses
         self.num_hyps = num_hyps
         self.attention_model = None  # Keras model with just embedding and encoder to output attention.
         self.set_sense_priors = set_sense_priors
         self.use_attention = use_attention
-        self.model_name_prefix = "ontolstm_ppa_att=%s_senses=%d_hyps=%d_sense-priors=%s_tune-embedding=%s_bi=%s" % (
-            str(self.use_attention), self.num_senses, self.num_hyps, str(set_sense_priors), str(self.tune_embedding),
+        use_prep_senses = False if prep_senses_dir is None else True
+        self.model_name_prefix = "ontolstm_ppa_att=%s_senses=%d_hyps=%d_sense-priors=%s_prep-senses=%s__tune-embedding=%s_bi=%s" % (
+            str(self.use_attention), self.num_senses, self.num_hyps, str(set_sense_priors), str(use_prep_senses), str(self.tune_embedding),
             str(self.bidirectional))
         self.custom_objects.update({"OntoAttentionLSTM": OntoAttentionLSTM, "OntoAwareEmbedding": OntoAwareEmbedding})
 
@@ -325,6 +328,7 @@ def main():
     argparser.add_argument('--onto_aware', help="Use ontology aware encoder. If this flag is not set, will use traditional encoder", action='store_true')
     argparser.add_argument('--num_senses', type=int, help="Number of senses per word if using OntoLSTM (default 2)", default=2)
     argparser.add_argument('--num_hyps', type=int, help="Number of hypernyms per sense if using OntoLSTM (default 5)", default=5)
+    argparser.add_argument('--prep_senses_dir', type=str, help="Directory containing preposition senses (from Semeval07 Task 6)")
     argparser.add_argument('--set_sense_priors', help="Set an exponential prior on sense probabilities", action='store_true')
     argparser.add_argument('--use_attention', help="Use attention in ontoLSTM. If this flag is not set, will use average concept representations", action='store_true')
     argparser.add_argument('--test_file', type=str, help="Optionally provide test file for which accuracy will be computed")
@@ -340,6 +344,7 @@ def main():
         attachment_model = OntoLSTMAttachmentModel(num_senses=args.num_senses, num_hyps=args.num_hyps,
                                                    use_attention=args.use_attention,
                                                    set_sense_priors=args.set_sense_priors,
+                                                   prep_senses_dir=args.prep_senses_dir,
                                                    embed_dim=args.embed_dim,
                                                    bidirectional=args.bidirectional,
                                                    tune_embedding=args.tune_embedding)

@@ -71,7 +71,9 @@ class AttachmentPredictor(Layer):
             composed_projection = K.tanh(head_projection + child_projection)
         for hidden_layer in self.hidden_layers:
             composed_projection = K.tanh(K.dot(composed_projection, hidden_layer))  # (batch_size, head_size, proj_dim)
-        head_word_scores = K.dot(composed_projection, self.scorer)  # (batch_size, head_size)
+        # K.dot doesn't work with one of them being a vector when the backend is TF. So expanding a squeezing.
+        # (batch_size, head_size)
+        head_word_scores = K.squeeze(K.dot(composed_projection, K.expand_dims(self.scorer)), axis=-1)
         if mask is None:
             attachment_probabilities = K.softmax(head_word_scores)  # (batch_size, head_size)
         else:

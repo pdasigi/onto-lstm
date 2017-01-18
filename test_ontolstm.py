@@ -23,9 +23,10 @@ embedded_input = embedding(input_layer)
 lstm_output = lstm(embedded_input)
 
 model = Model(input=input_layer, output=lstm_output)
+model.summary()
 model.compile(loss='mse', optimizer='sgd')
 
 input_values = numpy.random.rand(num_samples, length, num_senses, num_hyps)
-output_values = numpy.random.rand(num_samples, lstm_output_dim)
+output_values = numpy.random.rand(num_samples, length, lstm_output_dim)
 
 model.fit(input_values, output_values)

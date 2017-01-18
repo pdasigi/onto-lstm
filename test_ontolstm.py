@@ -15,10 +15,10 @@ lstm_output_dim = 20
 word_vocab_size = 100
 synset_vocab_size = 80
 
-input_layer = Input(shape=(length,), dtype='int32')
-embedding = Embedding(word_vocab_size, embedding_size)
-lstm = LSTM(lstm_output_dim, return_sequences=True)
-input_values = numpy.random.rand(num_samples, length)
+input_layer = Input(shape=(length, num_senses, num_hyps), dtype='int32')
+embedding = OntoAwareEmbedding(word_vocab_size, synset_vocab_size, embedding_size)
+lstm = OntoAttentionLSTM(lstm_output_dim, num_senses, num_hyps, return_sequences=True)
+input_values = numpy.random.rand(num_samples, length, num_senses, num_hyps)
 
 embedded_input = embedding(input_layer)
 lstm_output = lstm(embedded_input)

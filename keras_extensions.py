@@ -278,30 +278,30 @@ def changing_ndim_rnn_tf(step_function, inputs, initial_states, go_backwards, ma
                 # broadcast the mask to match the shape of A and B. That's what the
                 # tile call does, is just repeat the mask along its second dimension
                 # ndimensions times.
-                tiled_mask_t = tf.tile(mask_t, tf.pack(([1] * ndim-1) + [tf.shape(output)[1]]))
+                output_mask_t = tf.tile(mask_t, tf.pack(([1] * (ndim-2)) + [tf.shape(output)[1]]))
 
                 if len(successive_outputs) == 0:
-                    prev_output = zeros_like(output)
+                    prev_output = K.zeros_like(output)
                 else:
                     prev_output = successive_outputs[-1]
 
                 # Changing ndim modification: Define output mask with appropriate dims eliminated.
                 if eliminate_mask_dims is not None:
-                    output_mask_t = K.sum(tiled_mask_t, axis=eliminate_mask_dims)
+                    output_mask_t = tf.cast(K.any(output_mask_t, axis=eliminate_mask_dims), tf.bool)
                 else:
-                    output_mask_t = tiled_mask_t
+                    output_mask_t = tf.cast(output_mask_t, tf.bool)
 
                 output = tf.select(output_mask_t, output, prev_output)
 
                 return_states = []
                 for state, new_state in zip(states, new_states):
                     # (see earlier comment for tile explanation)
-                    tiled_mask_t = tf.tile(mask_t, tf.pack(([1] * ndim-1) + [tf.shape(new_state)[1]]))
+                    state_mask_t = tf.tile(mask_t, tf.pack(([1] * (ndim-2)) + [tf.shape(new_state)[1]]))
                     # Changing ndim modification: Define output mask with appropriate dims eliminated.
                     if eliminate_mask_dims is not None:
-                        state_mask_t = K.sum(tiled_mask_t, axis=eliminate_mask_dims)
+                        state_mask_t = tf.cast(K.any(state_mask_t, axis=eliminate_mask_dims), tf.bool)
                     else:
-                        state_mask_t = tiled_mask_t
+                        state_mask_t = tf.cast(state_mask_t, tf.bool)
                     return_states.append(tf.select(state_mask_t, new_state, state))
 
                 states = return_states

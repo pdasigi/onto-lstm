@@ -278,7 +278,7 @@ def changing_ndim_rnn_tf(step_function, inputs, initial_states, go_backwards, ma
                 # broadcast the mask to match the shape of A and B. That's what the
                 # tile call does, is just repeat the mask along its second dimension
                 # ndimensions times.
-                tiled_mask_t = tf.tile(mask_t, tf.pack([1, tf.shape(output)[1]]))
+                tiled_mask_t = tf.tile(mask_t, tf.pack(([1] * ndim-1) + [tf.shape(output)[1]]))
 
                 if len(successive_outputs) == 0:
                     prev_output = zeros_like(output)
@@ -296,7 +296,7 @@ def changing_ndim_rnn_tf(step_function, inputs, initial_states, go_backwards, ma
                 return_states = []
                 for state, new_state in zip(states, new_states):
                     # (see earlier comment for tile explanation)
-                    tiled_mask_t = tf.tile(mask_t, tf.pack([1, tf.shape(new_state)[1]]))
+                    tiled_mask_t = tf.tile(mask_t, tf.pack(([1] * ndim-1) + [tf.shape(new_state)[1]]))
                     # Changing ndim modification: Define output mask with appropriate dims eliminated.
                     if eliminate_mask_dims is not None:
                         state_mask_t = K.sum(tiled_mask_t, axis=eliminate_mask_dims)
@@ -312,7 +312,7 @@ def changing_ndim_rnn_tf(step_function, inputs, initial_states, go_backwards, ma
                 outputs = tf.pack(successive_outputs)
         else:
             for input in input_list:
-                output, states = step_function(input, states + constants)
+                output, states = step_function(input, states + constants + [None])  # None for mask
                 successive_outputs.append(output)
                 successive_states.append(states)
             last_output = successive_outputs[-1]

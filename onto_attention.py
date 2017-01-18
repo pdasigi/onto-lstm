@@ -34,6 +34,9 @@ class OntoAttentionLSTM(LSTM):
             # dependent on the previous timestep's output.
             warnings.warn("OntoLSTM does not support consume_less = cpu. Changing it to mem.")
             self.consume_less = "mem"
+        if K.backend() == "tensorflow" and not self.unroll:
+            warnings.warn("OntoLSTM does not work with unroll=False when backend is TF. Changing it to True.")
+            self.unroll = True
 
     def build(self, input_shape):
         self.input_spec = [InputSpec(shape=input_shape)]

@@ -97,7 +97,7 @@ class OntoAttentionLSTM(LSTM):
         uniform_scores = K.ones_like(sense_scores) * (1. / self.num_senses)
         sense_scores = switch(K.equal(sense_scores, K.zeros_like(sense_scores)), uniform_scores, sense_scores)
         if mask_i is not None:
-            sense_mask = K.sum(K.squeeze(mask_i, axis=-1), axis=2)  # (samples, sense)
+            sense_mask = K.any(K.squeeze(mask_i, axis=-1), axis=2)  # (samples, sense)
             sense_scores = switch(sense_mask, sense_scores, K.zeros_like(sense_scores))
         # Renormalizing sense scores to make \sum_{num_senses} p(sense | word) = 1
         sense_probabilities = sense_scores / K.expand_dims(K.sum(sense_scores, axis=1) + K.epsilon())  # (samples, num_senses)

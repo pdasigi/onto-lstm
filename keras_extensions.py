@@ -193,7 +193,7 @@ def changing_ndim_rnn_theano(step_function, inputs, initial_states, go_backwards
 
 
 def changing_ndim_rnn_tf(step_function, inputs, initial_states, go_backwards, mask,
-                         constants, unroll, input_length, eliminate_mask_ndims):
+                         constants, unroll, input_length, eliminate_mask_dims):
     '''Iterates over the time dimension of a tensor.
 
     # Arguments
@@ -259,7 +259,7 @@ def changing_ndim_rnn_tf(step_function, inputs, initial_states, go_backwards, ma
             # Transpose not supported by bool tensor types, hence round-trip to uint8.
             mask = tf.cast(mask, tf.uint8)
             if len(mask.get_shape()) == ndim - 1:
-                mask = expand_dims(mask)
+                mask = K.expand_dims(mask)
             # Reshaping mask to make timesteps the first dimension.
             mask = tf.cast(tf.transpose(mask, axes), tf.bool)
             mask_list = tf.unpack(mask)
@@ -352,9 +352,10 @@ def changing_ndim_rnn_tf(step_function, inputs, initial_states, go_backwards, ma
             # Transpose not supported by bool tensor types, hence round-trip to uint8.
             mask = tf.cast(mask, tf.uint8)
             if len(mask.get_shape()) == ndim - 1:
-                mask = expand_dims(mask)
+                mask = K.expand_dims(mask)
             mask = tf.transpose(mask, axes)
-            inputs = tf.concat(2, [tf.cast(mask, inputs.dtype), inputs])
+            # Concatenate at the last dim.
+            inputs = tf.concat(ndim-1, [tf.cast(mask, inputs.dtype), inputs])
 
             def _step(input, state):
                 if nb_states > 1:
@@ -364,23 +365,34 @@ def changing_ndim_rnn_tf(step_function, inputs, initial_states, go_backwards, ma
                 else:
                     states = [state]
 
-                # changing ndim fix: eliminate necessary dims after selecting the mask from the input. 
+                # The time dimension is not present here.
+                step_ndim = ndim - 1
+                # Permuting only to take out the mask.
+                permuted_input = K.permute_dimensions(input, (step_ndim-1,) + tuple(range(step_ndim-1)))
+                mask_t = K.expand_dims(permuted_input[0])
+                permuted_input = permuted_input[1:]
+                input = K.permute_dimensions(permuted_input, tuple(range(1, step_ndim)) + (0,))
+                # changing ndim fix: eliminate necessary dims after selecting the mask from the input.
                 if eliminate_mask_dims is not None:
-                    mask_t = K.sum(input[:, 0], axis=eliminate_mask_dims)
-                else:
-                    mask_t = input[:, 0]
+                    output_mask_t = K.sum(mask_t, axis=eliminate_mask_dims)
+
                 mask_t = tf.cast(mask_t, tf.bool)
+                output_mask_t = tf.cast(output_mask_t, tf.bool)
                 
-                input = input[:, 1:]
-                output, new_states = step_function(input, states + constants + (mask_t,))
+                output, new_states = step_function(input, states + constants + [mask_t])
 
-                output = tf.select(mask_t, output, states[0])
-                new_states = [tf.select(mask_t, new_states[i], states[i]) for i in range(len(states))]
+                tiled_output_mask_t = tf.tile(output_mask_t, tf.pack([1, tf.shape(output)[1]]))
+                output = tf.select(tiled_output_mask_t, output, states[0])
 
-                if len(new_states) == 1:
-                    new_state = new_states[0]
+                return_states = []
+                for state, new_state in zip(states, new_states):
+                    tiled_state_mask_t = tf.tile(output_mask_t, tf.pack([1, tf.shape(state)[1]]))
+                    return_states.append(tf.select(tiled_state_mask_t, new_state, state))
+
+                if len(return_states) == 1:
+                    new_state = return_states[0]
                 else:
-                    new_state = tf.concat(1, new_states)
+                    new_state = tf.concat(1, return_states)
 
                 return output, new_state
         else:

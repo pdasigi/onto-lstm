@@ -34,6 +34,7 @@ class OntoAttentionLSTM(LSTM):
             # dependent on the previous timestep's output.
             warnings.warn("OntoLSTM does not support consume_less = cpu. Changing it to mem.")
             self.consume_less = "mem"
+        #TODO: Remove this dependency.
         if K.backend() == "tensorflow" and not self.unroll:
             warnings.warn("OntoLSTM does not work with unroll=False when backend is TF. Changing it to True.")
             self.unroll = True
@@ -115,7 +116,9 @@ class OntoAttentionLSTM(LSTM):
                                                             dim=1)  #(samples, 1, 1, output_dim)
             hyp_projection1 = K.tanh(input_hyp_projection + context_hyp_projection_expanded) # (samples, senses, hyps, output_dim)
             hyp_projection2 = K.tanh(K.dot(hyp_projection1, self.hyp_projector2)) # (samples, senses, hyps, output_dim)
-            hyp_scores = K.dot(hyp_projection2, self.hyp_scorer) # (samples, senses, hyps)
+            # K.dot doesn't work with tensorflow when one of the arguments is a vector. So expanding and squeezing.
+            # (samples, senses, hyps)
+            hyp_scores = K.squeeze(K.dot(hyp_projection2, K.expand_dims(self.hyp_scorer)), axis=-1)
             if mask_i is not None:
                 hyp_scores = switch(K.squeeze(mask_i, axis=-1), hyp_scores, K.zeros_like(hyp_scores))
             scores_shape = K.shape(hyp_scores)

@@ -175,7 +175,7 @@ class RelationPredictor(PrepositionPredictor):
         return label_probabilities
 
     def get_config(self):
-        config = {"output_dim": self.output_dim}
+        config = {"output_dim": self.score_dim}
         base_config = super(RelationPredictor, self).get_config()
         config.update(base_config)
         return config

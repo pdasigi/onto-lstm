@@ -1,80 +1,37 @@
 import sys
 import argparse
-import pickle
 import random
 import numpy
+from overrides import overrides
 
-from keras.models import Model, load_model
-from keras.layers import Dropout, Embedding, Input, LSTM, Bidirectional
+from keras.layers import Input
 
-from embedding import OntoAwareEmbedding
+from encoders import LSTMEncoder, OntoLSTMEncoder
 from index_data import DataProcessor
-from onto_attention import OntoAttentionLSTM
-from attachment_predictor import AttachmentPredictor
+from preposition_model import PrepositionModel
+from preposition_predictors import AttachmentPredictor
 
-class PPAttachmentModel(object):
-    def __init__(self, bidirectional=False, tune_embedding=False, **kwargs):
-        self.data_processor = DataProcessor()
-        self.embed_dim = kwargs.pop("embed_dim", 50)
-        self.bidirectional = bidirectional
-        self.numpy_rng = numpy.random.RandomState(12345)
-        self.model = None
-        self.best_epoch = 0  # index of the best epoch
+
+class PPAttachmentModel(PrepositionModel):
+    def __init__(self, tune_embedding, bidirectional, **kwargs):
+        super(PPAttachmentModel, self).__init__(**kwargs)
         self.tune_embedding = tune_embedding
-        self.model_name_prefix = None
+        self.bidirectional = bidirectional
+        self.model_name = "PP Attachment"
         self.custom_objects = {"AttachmentPredictor": AttachmentPredictor}
 
-    def train(self, train_inputs, train_labels, num_epochs=20, embedding_file=None, num_mlp_layers=0,
-              dropout=None, patience=6):
-        '''
-        train_inputs (numpy_array): Indexed Head + preposition + child
-        train_labels (numpy_array): One-hot matrix indicating labels
-        num_epochs (int): Maximum number of epochs to run
-        embedding (numpy): Optional pretrained embedding
-        num_mlp_layers (int): Number of layers between the encoded inputs and the final softmax
-        dropout (dict): Dict containing dropout values after "embedding" and "encoder"
-        patience (int): Early stopping patience
-        '''
-        phrase_input_layer = Input(name='phrase', shape=train_inputs.shape[1:], dtype='int32')
-        encoded_phrase = self._get_encoded_phrase(phrase_input_layer, dropout, embedding_file)
-        attachment_probs = AttachmentPredictor(name='attachment_predictor', proj_dim=20, composition_type='HPCT',
-                                               num_hidden_layers=num_mlp_layers)(encoded_phrase)
-        model = Model(input=phrase_input_layer, output=attachment_probs)
-        model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-        self.model = model
-        print >>sys.stderr, "PP Attachment model summary:"
-        model.summary()
-        best_accuracy = 0.0
-        num_worse_epochs = 0
-        for epoch_id in range(num_epochs):
-            print >>sys.stderr, "Epoch: %d" % epoch_id
-            history = model.fit(train_inputs, train_labels, validation_split=0.05, nb_epoch=1)
-            validation_accuracy = history.history['val_acc'][0]  # history['val_acc'] is a list of size nb_epoch
-            if validation_accuracy > best_accuracy:
-                self.save_model(epoch_id)
-                self.best_epoch = epoch_id
-                num_worse_epochs = 0
-                best_accuracy = validation_accuracy
-            elif validation_accuracy < best_accuracy:
-                num_worse_epochs += 1
-                if num_worse_epochs >= patience:
-                    print >>sys.stderr, "Stopping training."
-                    break
-        self.save_best_model()
+    def get_input_layers(self, train_inputs):
+        phrase_input_layer = Input(name="phrase", shape=train_inputs.shape[1:], dtype='int32')
+        return phrase_input_layer
 
-    def _get_encoded_phrase(self, phrase_input_layer, dropout, embedding_file):
-        # Subclasses implement their own ways of encoding sentences.
-        raise NotImplementedError
+    def get_output_layers(self, inputs, dropout, embedding_file, num_mlp_layers):
+        encoded_phrase = self.encoder.get_encoded_phrase(inputs, dropout, embedding_file) 
+        predictor = AttachmentPredictor(name='attachment_predictor', proj_dim=20, composition_type='HPCT',
+                                        num_hidden_layers=num_mlp_layers)
+        outputs = predictor(encoded_phrase)
+        return outputs
 
-    @staticmethod
-    def _make_one_hot(indices):
-        # Accepts an array of indices, and converts them to a one-hot matrix
-        num_classes = max(indices)  # Assuming that the range is [1, max]
-        one_hot_indices = numpy.zeros((len(indices), num_classes))
-        for i, ind in enumerate(indices):
-            one_hot_indices[i][ind-1] = 1.0
-        return one_hot_indices
-
+    @overrides
     def process_data(self, input_file, onto_aware, for_test=False):
         dataset_type = "test" if for_test else "training"
         print >>sys.stderr, "Reading %s data" % dataset_type
@@ -113,11 +70,8 @@ class PPAttachmentModel(object):
         labels = self._make_one_hot(label_ind)
         return inputs, labels
 
-    def test(self, inputs, targets):
-        if not self.model:
-            raise RuntimeError, "Model not trained!"
-        metrics = self.model.evaluate(inputs, targets)
-        print >>sys.stderr, "Test accuracy: %.4f" % (metrics[1])  # The first metric is loss.
+    @overrides
+    def write_predictions(self, inputs):
         predictions = numpy.argmax(self.model.predict(inputs), axis=1)
         test_output_file = open("%s.predictions" % self.model_name_prefix, "w")
         for input_indices, prediction in zip(inputs, predictions):
@@ -131,65 +85,13 @@ class PPAttachmentModel(object):
             prediction = prediction - padding_length + 1  # +1 because the indices start at 1.
             print >>test_output_file, prediction
 
-    def save_model(self, epoch):
-        '''
-        Saves the current model using the epoch id to identify the file.
-        '''
-        self.model.save("%s_%d.model" % (self.model_name_prefix, epoch))
-        pickle.dump(self.data_processor, open("%s.dataproc" % self.model_name_prefix, "wb"))
-
-    def save_best_model(self):
-        '''
-        Copies the model corresponding to the best epoch as the final model file.
-        '''
-        from shutil import copyfile
-        best_model_file = "%s_%d.model" % (self.model_name_prefix, self.best_epoch)
-        final_model_file = "%s.model" % self.model_name_prefix
-        copyfile(best_model_file, final_model_file)
-
-    def load_model(self, epoch=None):
-        '''
-        Loads a saved model. If epoch id is provided, will load the corresponding model. Or else,
-        will load the best model.
-        '''
-        if not epoch:
-            self.model = load_model("%s.model" % self.model_name_prefix,
-                                    custom_objects=self.custom_objects)
-        else:
-            self.model = load_model("%s_%d.model" % (self.model_name_prefix, epoch),
-                                    custom_objects=self.custom_objects)
-        self.data_processor = pickle.load(open("%s.dataproc" % self.model_name_prefix, "rb"))
-
 
 class LSTMAttachmentModel(PPAttachmentModel):
     def __init__(self, **kwargs):
         super(LSTMAttachmentModel, self).__init__(**kwargs)
         self.model_name_prefix = "lstm_ppa_tune-embedding=%s_bi=%s" % (self.tune_embedding, self.bidirectional)
-
-    def _get_encoded_phrase(self, phrase_input_layer, dropout, embedding_file):
-        if embedding_file is None:
-            if not self.tune_embedding:
-                print >>sys.stderr, "Pretrained embedding is not given. Setting tune_embedding to True."
-                self.tune_embedding = True
-            embedding = None
-        else:
-            # Put the embedding in a list for Keras to treat it as initiali weights of the embeddign layer.
-            embedding = [self.data_processor.get_embedding_matrix(embedding_file, onto_aware=False)]
-        vocab_size = self.data_processor.get_vocab_size(onto_aware=False)
-        embedding_layer = Embedding(input_dim=vocab_size, output_dim=self.embed_dim, weights=embedding,
-                                    trainable=self.tune_embedding, mask_zero=True, name="embedding")
-        embedded_phrase = embedding_layer(phrase_input_layer)
-        embedding_dropout = dropout.pop("embedding", 0.0)
-        if embedding_dropout > 0:
-            embedded_phrase = Dropout(embedding_dropout)(embedded_phrase)
-        encoder = LSTM(input_dim=self.embed_dim, output_dim=self.embed_dim, return_sequences=True, name="encoder")
-        if self.bidirectional:
-            encoder = Bidirectional(encoder, name="encoder")
-        encoded_phrase = encoder(embedded_phrase)
-        encoder_dropout = dropout.pop("encoder", 0.0)
-        if encoder_dropout > 0:
-            encoded_phrase = Dropout(encoder_dropout)(encoded_phrase)
-        return encoded_phrase
+        self.encoder = LSTMEncoder(self.data_processor, self.embed_dim, self.bidirectional, self.tune_embedding)
+        self.custom_objects.update(self.encoder.get_custom_objects())
 
 
 class OntoLSTMAttachmentModel(PPAttachmentModel):
@@ -205,45 +107,13 @@ class OntoLSTMAttachmentModel(PPAttachmentModel):
         self.set_sense_priors = set_sense_priors
         self.use_attention = use_attention
         use_prep_senses = False if prep_senses_dir is None else True
+        self.encoder = OntoLSTMEncoder(self.num_senses, self.num_hyps, self.use_attention, self.set_sense_priors,
+                                       data_processor=self.data_processor, embed_dim=self.embed_dim,
+                                       bidirectional=self.bidirectional, tune_embedding=self.tune_embedding)
         self.model_name_prefix = "ontolstm_ppa_att=%s_senses=%d_hyps=%d_sense-priors=%s_prep-senses=%s__tune-embedding=%s_bi=%s" % (
             str(self.use_attention), self.num_senses, self.num_hyps, str(set_sense_priors), str(use_prep_senses), str(self.tune_embedding),
             str(self.bidirectional))
-        self.custom_objects.update({"OntoAttentionLSTM": OntoAttentionLSTM, "OntoAwareEmbedding": OntoAwareEmbedding})
-
-    def _get_encoded_phrase(self, phrase_input_layer, dropout, embedding_file):
-        word_vocab_size = self.data_processor.get_vocab_size(onto_aware=False)
-        synset_vocab_size = self.data_processor.get_vocab_size(onto_aware=True)
-        if embedding_file is None:
-            if not self.tune_embedding:
-                print >>sys.stderr, "Pretrained embedding is not given. Setting tune_embedding to True."
-                self.tune_embedding = True
-            embedding_weights = None
-        else:
-            # TODO: Other sources for prior initialization
-            embedding = self.data_processor.get_embedding_matrix(embedding_file, onto_aware=True)
-            # Put the embedding in a list for Keras to treat it as initial weights of the embedding layer.
-            embedding_weights = [embedding]
-            if self.set_sense_priors and self.tune_embedding:
-                initial_sense_prior_parameters = numpy.random.uniform(low=0.01, high=0.99, size=(word_vocab_size, 1))
-                embedding_weights.append(initial_sense_prior_parameters)
-        embedding_layer = OntoAwareEmbedding(word_vocab_size, synset_vocab_size, self.embed_dim,
-                                             weights=embedding_weights, mask_zero=True,
-                                             set_sense_priors=self.set_sense_priors,
-                                             trainable=self.tune_embedding, name="embedding")
-        embedded_phrase = embedding_layer(phrase_input_layer)
-        embedding_dropout = dropout.pop("embedding", 0.0)
-        if embedding_dropout > 0.0:
-            embedded_phrase = Dropout(embedding_dropout)(embedded_phrase)
-        encoder = OntoAttentionLSTM(input_dim=self.embed_dim, output_dim=self.embed_dim, num_senses=self.num_senses,
-                                    num_hyps=self.num_hyps, use_attention=self.use_attention, consume_less="gpu",
-                                    return_sequences=True, name="onto_lstm")
-        if self.bidirectional:
-            encoder = Bidirectional(encoder, name="onto_lstm")
-        encoded_phrase = encoder(embedded_phrase)
-        encoder_dropout = dropout.pop("encoder", 0.0)
-        if encoder_dropout > 0.0:
-            encoded_phrase = Dropout(encoder_dropout)(encoded_phrase)
-        return encoded_phrase
+        self.custom_objects.update(self.encoder.get_custom_objects())
 
     def get_attention(self, inputs):
         # Takes inputs and returns pairs of synsets and corresponding attention values.
@@ -266,7 +136,7 @@ class OntoLSTMAttachmentModel(PPAttachmentModel):
                         if hyp_input == 0:
                             continue
                         hyp_attention_values.append((self.data_processor.get_token_from_index(hyp_input,
-                                                        onto_aware=True), hyp_attention))
+                                                     onto_aware=True), hyp_attention))
                     sense_attention_values.append(hyp_attention_values)
                 word_attention_values.append(sense_attention_values)
             sent_attention_values.append(word_attention_values)

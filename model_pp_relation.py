@@ -64,7 +64,7 @@ class PPRelationModel(PrepositionModel):
         if for_test:
             if not self.model:
                 raise RuntimeError, "Model not trained yet!"
-            input_shape = self.model.get_input_shape_at(0)  # (num_sentences, num_words, ...)
+            input_shape = self.model.get_input_shape_at(0)[0]  # (num_sentences, num_words, ...)
             sentlenlimit = input_shape[1]
         else:
             sentlenlimit = max_sentence_length

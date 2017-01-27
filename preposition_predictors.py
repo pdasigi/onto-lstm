@@ -136,7 +136,7 @@ class RelationPredictor(PrepositionPredictor):
 
     Note that this layer takes two inputs.
     '''
-    def __init__(self, output_dim, **kwargs):
+    def __init__(self, output_dim=32, **kwargs):
         kwargs["score_dim"] = output_dim
         super(RelationPredictor, self).__init__(**kwargs)
         print >>sys.stderr, "Initializing relation predictor with %s composition" % self.composition_type
@@ -173,3 +173,9 @@ class RelationPredictor(PrepositionPredictor):
         class_scores = K.dot(composed_projection, self.scorer)
         label_probabilities = K.softmax(class_scores)
         return label_probabilities
+
+    def get_config(self):
+        config = {"output_dim": self.output_dim}
+        base_config = super(RelationPredictor, self).get_config()
+        config.update(base_config)
+        return config

@@ -91,7 +91,7 @@ class PPRelationModel(PrepositionModel):
         predictions = numpy.argmax(self.model.predict(inputs), axis=1)
         test_output_file = open("%s.predictions" % self.model_name_prefix, "w")
         for prediction in predictions:
-            print >>test_output_file, rev_label_map[prediction]
+            print >>test_output_file, rev_label_map[prediction + 1]
 
 
     @overrides

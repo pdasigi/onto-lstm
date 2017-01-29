@@ -101,4 +101,5 @@ class OntoLSTMEncoder(Encoder):
 
     @staticmethod
     def get_custom_objects():
-        return {"OntoAttentionLSTM": OntoAttentionLSTM}
+        return {"OntoAttentionLSTM": OntoAttentionLSTM,
+                "OntoAwareEmbedding": OntoAwareEmbedding}

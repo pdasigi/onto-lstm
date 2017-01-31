@@ -112,5 +112,5 @@ class PrepositionModel(object):
         else:
             self.model = load_model("%s_%d.model" % (self.model_name_prefix, epoch),
                                     custom_objects=self.custom_objects)
-        model.summary()
+        self.model.summary()
         self.data_processor = pickle.load(open("%s.dataproc" % self.model_name_prefix, "rb"))

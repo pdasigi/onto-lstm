@@ -47,7 +47,7 @@ class PrepositionModel(object):
         num_worse_epochs = 0
         for epoch_id in range(num_epochs):
             print >>sys.stderr, "Epoch: %d" % epoch_id
-            history = model.fit(train_inputs, train_labels, validation_split=0.05, nb_epoch=1)
+            history = model.fit(train_inputs, train_labels, validation_split=0.1, nb_epoch=1)
             validation_accuracy = history.history['val_acc'][0]  # history['val_acc'] is a list of size nb_epoch
             if validation_accuracy > best_accuracy:
                 self.save_model(epoch_id)
@@ -112,4 +112,5 @@ class PrepositionModel(object):
         else:
             self.model = load_model("%s_%d.model" % (self.model_name_prefix, epoch),
                                     custom_objects=self.custom_objects)
+        model.summary()
         self.data_processor = pickle.load(open("%s.dataproc" % self.model_name_prefix, "rb"))

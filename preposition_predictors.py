@@ -29,6 +29,9 @@ class PrepositionPredictor(Layer):
         self.allowed_compositions = []
         super(PrepositionPredictor, self).__init__(**kwargs)
 
+    def get_output_shape_for(self, input_shape):
+        raise NotImplementedError
+
     def build(self, input_shape):
         # The composition types are taken from Belinkov et al.'s TACL 2014 paper:
         # HC: Head-Child; HPC: Head-Prep-Child; HPCT: Head-Prep-Child-Ternary.
@@ -61,6 +64,7 @@ class PrepositionPredictor(Layer):
         self.proj_prep = self.init((input_dim, self.proj_dim), name='{}_proj_prep'.format(self.name))
         self.proj_child = self.init((input_dim, self.proj_dim), name='{}_proj_child'.format(self.name))
         self.trainable_weights = [self.proj_head, self.proj_prep, self.proj_child]
+        self.hidden_layers = []
         if self.num_hidden_layers > 0:
             # This means we have to pass the composed representation through an MLP instead of directly computing
             # scores.
@@ -70,9 +74,6 @@ class PrepositionPredictor(Layer):
             self.trainable_weights.extend(self.hidden_layers)
         self.scorer = self.init((self.proj_dim, self.score_dim), name='{}_scorer'.format(self.name))
         self.trainable_weights.append(self.scorer)
-
-    def get_output_shape_for(self, input_shape):
-        raise NotImplementedError
 
     def compute_mask(self, input, mask=None):
         return None
@@ -183,15 +184,24 @@ class RelationPredictor(PrepositionPredictor):
         assert isinstance(x, list) or isinstance(x, tuple)
         encoded_sentence = x[0]
         prep_indices = K.squeeze(x[1], axis=-1)  #(batch_size,)
-
+        batch_indices = K.arange(K.shape(encoded_sentence)[0])  # (batch_size,)
         if self.with_attachment_probs:
-            head_indices = K.argmax(x[2])  # (batch_size,)
-            #head_indices = K.cast(K.sum(x[2], axis=1), 'int32')  # (batch_size,)
+            # We're essentially doing K.argmax(x[2]) here, but argmax is not differentiable!
+            head_probs = x[2]
+            head_probs_padding = K.zeros_like(x[2])[:, :2]  # (batch_size, 2)
+            # (batch_size, input_length)
+            padded_head_probs = K.concatenate([head_probs, head_probs_padding])
+            # (batch_size, 1)
+            max_head_probs = K.expand_dims(K.max(padded_head_probs, axis=1))
+            # (batch_size, input_length, 1)
+            max_head_prob_indices = K.expand_dims(K.equal(padded_head_probs, max_head_probs))
+            # (batch_size, input_length, input_dim)
+            masked_head_encoding = K.switch(max_head_prob_indices, encoded_sentence, K.zeros_like(encoded_sentence))
+            # (batch_size, input_dim)
+            head_encoding = K.sum(masked_head_encoding, axis=1)
         else:
             head_indices = prep_indices - 1  # (batch_size,)
-
-        batch_indices = K.arange(K.shape(encoded_sentence)[0])  # (batch_size,)
-        head_encoding = encoded_sentence[batch_indices, head_indices, :]  # (batch_size, input_dim)
+            head_encoding = encoded_sentence[batch_indices, head_indices, :]  # (batch_size, input_dim)
         prep_encoding = encoded_sentence[batch_indices, prep_indices, :]  # (batch_size, input_dim)
         child_encoding = encoded_sentence[batch_indices, prep_indices+1, :]  # (batch_size, input_dim)
         '''

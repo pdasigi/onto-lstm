@@ -269,7 +269,8 @@ class RelationPredictor(PrepositionPredictor):
         
 
     def get_config(self):
-        config = {"output_dim": self.score_dim}
+        config = {"output_dim": self.score_dim,
+                  "with_attachment_probs": self.with_attachment_probs}
         base_config = super(RelationPredictor, self).get_config()
         config.update(base_config)
         return config

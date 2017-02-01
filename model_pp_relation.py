@@ -3,6 +3,7 @@ import argparse
 import random
 import numpy
 import pickle
+import warnings
 from overrides import overrides
 
 from keras.layers import Input
@@ -10,18 +11,22 @@ from keras.layers import Input
 from encoders import LSTMEncoder, OntoLSTMEncoder
 from index_data import DataProcessor
 from preposition_model import PrepositionModel
-from preposition_predictors import RelationPredictor
+from preposition_predictors import RelationPredictor, AttachmentPredictor
 
 
 class PPRelationModel(PrepositionModel):
-    def __init__(self, tune_embedding, bidirectional, **kwargs):
+    def __init__(self, tune_embedding, bidirectional, predict_attachment, **kwargs):
         super(PPRelationModel, self).__init__(**kwargs)
         self.tune_embedding = tune_embedding
         self.bidirectional = bidirectional
+        self.predict_attachment = predict_attachment
         self.num_relation_types = None
         self.model_name = "PP Relation"
         self.label_map = {}
         self.custom_objects = {"RelationPredictor": RelationPredictor}
+        if self.predict_attachment:
+            warnings.warn("Assuming the last two words in input sentences are the preposition and its child.")
+            self.custom_objects["AttachmentPredictor"] = AttachmentPredictor
 
     def get_input_layers(self, train_inputs):
         sentence_inputs, preposition_indices = train_inputs
@@ -33,9 +38,19 @@ class PPRelationModel(PrepositionModel):
     def get_output_layers(self, inputs, dropout, embedding_file, num_mlp_layers):
         sentence_input_layer, prep_indices_layer = inputs
         encoded_input = self.encoder.get_encoded_phrase(sentence_input_layer, dropout, embedding_file)
-        predictor = RelationPredictor(self.num_relation_types, name='relation_predictor', proj_dim=20,
-                                      composition_type='HPCT', num_hidden_layers=num_mlp_layers)
-        outputs = predictor([encoded_input, prep_indices_layer])
+        if self.predict_attachment:
+            attachment_predictor = AttachmentPredictor(name='attachment_predictor', proj_dim=20,
+                                                       composition_type='HPCD')
+            # Note: We assume here that the preposition phrase is the last two words.
+            attachment_probabilities = attachment_predictor(encoded_input)
+            relation_predictor = RelationPredictor(self.num_relation_types, name='relation_predictor', proj_dim=20,
+                                                   composition_type='HPCT', num_hidden_layers=num_mlp_layers,
+                                                   with_attachment_probs=True)
+            outputs = relation_predictor([encoded_input, prep_indices_layer, attachment_probabilities])
+        else:
+            predictor = RelationPredictor(self.num_relation_types, name='relation_predictor', proj_dim=20,
+                                          composition_type='HPCT', num_hidden_layers=num_mlp_layers)
+            outputs = predictor([encoded_input, prep_indices_layer])
         return outputs
 
     @overrides
@@ -92,7 +107,6 @@ class PPRelationModel(PrepositionModel):
         test_output_file = open("%s.predictions" % self.model_name_prefix, "w")
         for prediction in predictions:
             print >>test_output_file, rev_label_map[prediction + 1]
-
 
     @overrides
     def save_model(self, epoch):
@@ -156,6 +170,7 @@ def main():
     argparser.add_argument('--num_mlp_layers', type=int, help="Number of mlp layers (default 0)", default=0)
     argparser.add_argument('--embedding_dropout', type=float, help="Dropout after embedding", default=0.0)
     argparser.add_argument('--encoder_dropout', type=float, help="Dropout after encoder", default=0.0)
+    argparser.add_argument('--predict_attachment', help="Should we also predict the head? If not, we'll just use the last word in the head phrase.", action='store_true')
     args = argparser.parse_args()
     if args.onto_aware:
         attachment_model = OntoLSTMRelationModel(num_senses=args.num_senses, num_hyps=args.num_hyps,
@@ -164,10 +179,12 @@ def main():
                                                  prep_senses_dir=args.prep_senses_dir,
                                                  embed_dim=args.embed_dim,
                                                  bidirectional=args.bidirectional,
-                                                 tune_embedding=args.tune_embedding)
+                                                 tune_embedding=args.tune_embedding,
+                                                 predict_attachment=args.predict_attachment)
     else:
         attachment_model = LSTMRelationModel(embed_dim=args.embed_dim, bidirectional=args.bidirectional,
-                                               tune_embedding=args.tune_embedding)
+                                             tune_embedding=args.tune_embedding,
+                                             predict_attachment=args.predict_attachment)
 
     ## Train model or load trained model
     if args.train_file is None:

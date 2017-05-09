@@ -2,7 +2,7 @@
 This repository contains a Keras implementation of WordNet grounded context sensitive token embeddings, described in the paper [Ontology-Aware Token Embeddings for Prepositional Phrase Attachment](https://arxiv.org/abs/1705.02925). Primarily, we implement two Keras layers here: `OntologyAwareEmbedding` and `OntoAttentionLSTM`, which (in most cases) will be used together.
 
 ## Background
-The idea behind WordNet grounding is to represent words as a distribution over their senses and possible hypernyms from WordNet. That is, given a word *pool* as a noun, WordNet 3.1 identifies 9 senses of the word:
+The idea behind WordNet grounding is to represent words as a distribution over their senses and possible hypernyms from WordNet. That is, given a word **pool** as a noun, WordNet 3.1 identifies 9 senses of the word:
 * `pool.n.01`: An excavation
 * `pool.n.02`: A small lake
 * `pool.n.03`: An organization of people or resources
@@ -13,15 +13,15 @@ For each of these senses, WordNet also defines hypernyms (generalizations) in or
 * `pool.n.02`: `lake.n.01`, `body_of_water.n.01`, ...
 * `pool.n.03`: `organization.n.01`, `social_group.n.01`, ...
 
-We represent a token *pool* as a weighted average of the representations of a fixed number of its hyperyms, coming from a fixed number of its senses.
+We represent a token **pool** as a weighted average of the representations of a fixed number of its hyperyms, coming from a fixed number of its senses.
 
-The weights in the weighted average depend on the context, thus making our word representations context-sensitive (or formally token-level representations instead of type-level). For example, the distribution of weights for the word *pool* in the following sentence:
+The weights in the weighted average depend on the context, thus making our word representations context-sensitive (or formally token-level representations instead of type-level). For example, the distribution of weights for the word **pool** in the following sentence:
 
-_Swimming is not allowed in this *pool*_.
+_Swimming is not allowed in this **pool**._
 
 is different from those in the following sentence:
 
-_I managed to find a car *pool*_.
+_I managed to find a car **pool**._
 
 The computation of this context sensitive weight distribution is tied to the computation that happens in the encoder (LSTM in our case).
 

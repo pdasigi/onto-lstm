@@ -1,5 +1,5 @@
 # Ontology-Aware Token Embedding and LSTM Encoder
-This repository contains a Keras implementation of WordNet grounded context sensitive token embeddings. Primarily, we implement two Keras layers here: `OntologyAwareEmbedding` and `OntoAttentionLSTM`, which (in most cases) will be used together.
+This repository contains a Keras implementation of WordNet grounded context sensitive token embeddings, described in the paper [Ontology-Aware Token Embeddings for Prepositional Phrase Attachment](https://arxiv.org/abs/1705.02925). Primarily, we implement two Keras layers here: `OntologyAwareEmbedding` and `OntoAttentionLSTM`, which (in most cases) will be used together.
 
 ## Background
 The idea behind WordNet grounding is to represent words as a distribution over their senses and possible hypernyms from WordNet. That is, given a word `pool` as a noun, WordNet 3.1 identifies 9 senses of the word:

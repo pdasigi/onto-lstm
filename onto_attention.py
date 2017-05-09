@@ -67,6 +67,7 @@ class OntoAttentionLSTM(LSTM):
             self.trainable_weights.extend([self.input_hyp_projector, self.context_hyp_projector,
                                            self.hyp_projector2, self.hyp_scorer])
 
+        
         if initial_ontolstm_weights is not None:
             self.set_weights(initial_ontolstm_weights)
             del initial_ontolstm_weights
@@ -152,7 +153,8 @@ class OntoAttentionLSTM(LSTM):
     def step(self, x, states):
         h, c, att = self._step(x, states)
         if self.return_attention:
-            return att, [h, c]
+            # Flattening attention to (batch_size, senses*hyps)
+            return K.batch_flatten(att), [h, c]
         else:
             return h, [h, c]
 
@@ -175,6 +177,14 @@ class OntoAttentionLSTM(LSTM):
             return K.any(mask, axis=(-2, -1))
         else:
             return None
+
+    def get_output_shape_for(self, input_shape):
+        super_shape = super(OntoAttentionLSTM, self).get_output_shape_for(input_shape)
+        if self.return_attention:
+            # Replacing output_dim with attention over senses and hyps
+            return super_shape[:-1] + (self.num_hyps * self.num_senses,)
+        else:
+            return super_shape 
 
     def call(self, x, mask=None):
         # Overriding call to make a call to our own rnn instead of the inbuilt rnn.

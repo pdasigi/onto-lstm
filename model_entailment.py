@@ -76,7 +76,7 @@ class EntailmentModel(object):
         num_worse_epochs = 0
         for epoch_id in range(num_epochs):
             print >>sys.stderr, "Epoch: %d" % epoch_id
-            history = model.fit(train_inputs, train_labels, validation_split=0.017568, nb_epoch=1)
+            history = model.fit(train_inputs, train_labels, validation_split=0.1, nb_epoch=1)
             validation_accuracy = history.history['val_acc'][0]  # history['val_acc'] is a list of size nb_epoch
             if validation_accuracy > best_accuracy:
                 self.save_model(epoch_id)
@@ -276,9 +276,9 @@ class OntoLSTMEntailmentModel(EntailmentModel):
             embedding = self.data_processor.get_embedding_matrix(embedding_file, onto_aware=True)
             # Put the embedding in a list for Keras to treat it as initial weights of the embedding layer.
             embedding_weights = [embedding]
-            if self.set_sense_priors:
-                initial_sense_prior_parameters = numpy.random.uniform(low=0.01, high=0.99, size=(word_vocab_size, 1))
-                embedding_weights.append(initial_sense_prior_parameters)
+            #if self.set_sense_priors:
+            #    initial_sense_prior_parameters = numpy.random.uniform(low=0.01, high=0.99, size=(word_vocab_size, 1))
+            #    embedding_weights.append(initial_sense_prior_parameters)
         embedding_layer = OntoAwareEmbedding(word_vocab_size, synset_vocab_size, self.embed_dim, weights=embedding_weights,
             mask_zero=True, set_sense_priors=self.set_sense_priors, trainable=tune_embedding, name="embedding")
         embedded_sent1 = embedding_layer(sent1_input_layer)
@@ -466,6 +466,7 @@ def main():
     argparser.add_argument('--set_sense_priors', help="Set an exponential prior on sense probabilities", action='store_true')
     argparser.add_argument('--use_attention', help="Use attention in ontoLSTM. If this flag is not set, will use average concept representations", action='store_true')
     argparser.add_argument('--test_file', type=str, help="Optionally provide test file for which accuracy will be computed")
+    argparser.add_argument('--load_model_from_epoch', type=int, help="Load model from a specific epoch. Will load best model by default.")
     argparser.add_argument('--attention_output', type=str, help="Print attention values of the validation data in the given file")
     argparser.add_argument('--tune_embedding', help="Fine tune pretrained embedding (if provided)", action='store_true')
     argparser.add_argument('--num_epochs', type=int, help="Number of epochs (default 20)", default=20)
@@ -501,7 +502,7 @@ def main():
 
     ## Train model or load trained model
     if args.train_file is None:
-        entailment_model.load_model()
+        entailment_model.load_model(args.load_model_from_epoch)
     else:
         train_inputs, train_labels = entailment_model.process_train_data(args.train_file, onto_aware=args.onto_aware)
         dropout = {"embedding": args.embedding_dropout,

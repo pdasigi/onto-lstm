@@ -97,7 +97,7 @@ class PPRelationModel(PrepositionModel):
                                                             sentlenlimit=sentlenlimit, for_test=for_test,
                                                             remove_singletons=False)
         prep_indices = numpy.asarray(prep_indices)
-        labels = self._make_one_hot(label_indices)
+        labels = self.data_processor.make_one_hot(label_indices)
         return [sentence_inputs, prep_indices], labels
 
     @overrides

@@ -18,11 +18,12 @@ class PrepositionModel(object):
         self.model_name = None
         self.encoder = None  # subclasses need to define their encoders
         self.custom_objects = {}
+        self.validation_split = 0.1
 
-    def get_input_layers(self, train_inputs):
+    def _get_input_layers(self, train_inputs):
        raise NotImplementedError
 
-    def get_output_layers(self, inputs, dropout, embedding_file, num_mlp_layers):
+    def _get_output_layers(self, inputs, dropout, embedding_file, num_mlp_layers):
         raise NotImplementedError
 
     def train(self, train_inputs, train_labels, num_epochs=20, embedding_file=None, num_mlp_layers=0,
@@ -36,8 +37,8 @@ class PrepositionModel(object):
         dropout (dict): Dict containing dropout values after "embedding" and "encoder"
         patience (int): Early stopping patience
         '''
-        inputs = self.get_input_layers(train_inputs)
-        outputs = self.get_output_layers(inputs, dropout, embedding_file, num_mlp_layers)
+        inputs = self._get_input_layers(train_inputs)
+        outputs = self._get_output_layers(inputs, dropout, embedding_file, num_mlp_layers)
         model = Model(input=inputs, output=outputs)
         model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
         self.model = model
@@ -47,7 +48,7 @@ class PrepositionModel(object):
         num_worse_epochs = 0
         for epoch_id in range(num_epochs):
             print >>sys.stderr, "Epoch: %d" % epoch_id
-            history = model.fit(train_inputs, train_labels, validation_split=0.1, nb_epoch=1)
+            history = model.fit(train_inputs, train_labels, validation_split=self.validation_split, nb_epoch=1)
             validation_accuracy = history.history['val_acc'][0]  # history['val_acc'] is a list of size nb_epoch
             if validation_accuracy > best_accuracy:
                 self.save_model(epoch_id)
@@ -60,10 +61,10 @@ class PrepositionModel(object):
                     print >>sys.stderr, "Stopping training."
                     break
         self.save_best_model()
-    
+
     def test(self, inputs, targets):
         if not self.model:
-            raise RuntimeError, "Model not trained!"
+            raise RuntimeError("Model not trained!")
         metrics = self.model.evaluate(inputs, targets)
         print >>sys.stderr, "Test accuracy: %.4f" % (metrics[1])  # The first metric is loss.
         self.write_predictions(inputs)
@@ -71,15 +72,6 @@ class PrepositionModel(object):
     def process_data(self, input_file, onto_aware, for_test=False):
         # Subclasses define this method based on the task.
         raise NotImplementedError
-
-    @staticmethod
-    def _make_one_hot(indices):
-        # Accepts an array of indices, and converts them to a one-hot matrix
-        num_classes = max(indices)  # Assuming that the range is [1, max]
-        one_hot_indices = numpy.zeros((len(indices), num_classes))
-        for i, ind in enumerate(indices):
-            one_hot_indices[i][ind-1] = 1.0
-        return one_hot_indices
 
     def write_predictions(self, inputs):
         # Subclasses define their own ways of writing predictions depending on the task.

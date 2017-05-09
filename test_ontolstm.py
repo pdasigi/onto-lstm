@@ -1,34 +1,43 @@
-import numpy
-from embedding import OntoAwareEmbedding
-from keras.layers import Input
 from keras.models import Model
+from keras.layers import Input, Dense
 
-from onto_attention import OntoAttentionLSTM
+from index_data import DataProcessor
+from encoders import OntoLSTMEncoder
 
-num_samples = 100
-num_senses = 3
-num_hyps = 5
-length = 10
-embedding_size = 50
-lstm_output_dim = 20
+## Defining constants
+NUM_SENSES = 3
+NUM_HYPS = 5
+ONTO_ATTENTION = True
+SENSE_PRIORS = True
+EMBED_DIM = 50
+BIDIRECTIONAL = False
+TUNE_EMBEDDING = True
+EMBEDDING_FILE = None  # Replace with a gzipped embedding file if needed.
 
-word_vocab_size = 100
-synset_vocab_size = 80
+## Reading text file
+test_file = open('data/test_data.tsv')
+labeled_sentences = [x.strip().split('\t') for x in test_file]
+labels, tagged_sentences = zip(*labeled_sentences)
 
-# num_hyps + 1 because the word index is added as the last index along all senses.
-# See the docstring in embedding.py for more information.
-input_layer = Input(shape=(length, num_senses, num_hyps+1), dtype='int32')
-embedding = OntoAwareEmbedding(word_vocab_size, synset_vocab_size, embedding_size, mask_zero=True)
-lstm = OntoAttentionLSTM(lstm_output_dim, num_senses, num_hyps, return_sequences=True)
-input_values = numpy.random.randint(low=0, high=synset_vocab_size, size=(num_samples, length, num_senses, num_hyps+1))
+## Preparing (indexing) data for classification.
+# word_syn_cutoff is the number of senses per word,
+# and syn_path_cutoff is the number of hypernyms per sense
+data_processor = DataProcessor(word_syn_cutoff=NUM_SENSES, syn_path_cutoff=NUM_HYPS)
+indexed_input = data_processor.prepare_input(tagged_sentences, onto_aware=True)
+one_hot_labels = data_processor.make_one_hot([int(x) for x in labels])
 
-embedded_input = embedding(input_layer)
-lstm_output = lstm(embedded_input)
-
-model = Model(input=input_layer, output=lstm_output)
+## Defining Keras model
+input_layer = Input(shape=indexed_input.shape[1:], dtype='int32')
+onto_lstm = OntoLSTMEncoder(num_senses=NUM_SENSES, num_hyps=NUM_HYPS, use_attention=ONTO_ATTENTION,
+                            set_sense_priors=SENSE_PRIORS, data_processor=data_processor,
+                            embed_dim=EMBED_DIM, return_sequences=False, bidirectional=BIDIRECTIONAL,
+                            tune_embedding=TUNE_EMBEDDING)
+encoded_input = onto_lstm.get_encoded_phrase(input_layer, embedding_file=EMBEDDING_FILE)
+softmax_layer = Dense(2, activation='softmax')
+output_predictions = softmax_layer(encoded_input)
+model = Model(input=input_layer, output=output_predictions)
 model.summary()
-model.compile(loss='mse', optimizer='sgd')
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['acc'])
 
-output_values = numpy.random.rand(num_samples, length, lstm_output_dim)
-
-model.fit(input_values, output_values)
+## Training
+model.fit(indexed_input, one_hot_labels, validation_split=0.2, nb_epoch=1)

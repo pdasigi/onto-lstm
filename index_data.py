@@ -138,6 +138,17 @@ class DataProcessor(object):
             sentence_hyps.append(word_hyps)
         return sentence_hyps
 
+    @staticmethod
+    def make_one_hot(indices):
+        '''
+        Accepts an array of indices, and converts them to a one-hot matrix
+        '''
+        num_classes = max(indices)  # Assuming that the range is [1, max]
+        one_hot_indices = numpy.zeros((len(indices), num_classes))
+        for i, ind in enumerate(indices):
+            one_hot_indices[i][ind-1] = 1.0
+        return one_hot_indices
+
     # TODO: Separate methods for returning word inds and conc inds
     def index_sentence(self, words, pos_tags, for_test, remove_singletons, onto_aware):
         # We need word_inds whether onto_aware is true or false
@@ -198,7 +209,7 @@ class DataProcessor(object):
                 struct = [padding] + struct
             # Check if there are deeper levels
             if len(limits) > 1:
-                return [_pad_struct(sub_struct, limits[1:], padding[0]) for sub_struct in struct]
+                return [_pad_struct(sub_struct, limits[1:], padding[0]) for sub_struct in struct][-limit:]
             else:
                 # If the input is already longer than limit, prune it.
                 return struct[-limit:]

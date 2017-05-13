@@ -13,11 +13,16 @@ class OntoAwareEmbedding(Embedding):
     '''
     input_ndim = 4
 
-    def __init__(self, word_index_size, synset_index_size, embedding_dim, set_sense_priors=True, **kwargs):
+    def __init__(self, word_index_size, synset_index_size, embedding_dim, set_sense_priors=True,
+                 tune_embedding=True, **kwargs):
         self.embedding_dim = embedding_dim
         self.word_index_size = word_index_size
         self.synset_index_size = synset_index_size
         self.set_sense_priors = set_sense_priors
+        # We have a separate "tune_embedding" field instead of using trainable because we have two sets of
+        # parameters here: the embedding weights, and sense prior weights. We may want to fix only one of
+        # them at a time.
+        self.tune_embedding = tune_embedding
         # Convincing Embedding to return an embedding of the right shape. The output_dim of this layer is embedding_dim+1
         kwargs['output_dim'] = self.embedding_dim
         kwargs['input_dim'] = self.synset_index_size
@@ -49,13 +54,17 @@ class OntoAwareEmbedding(Embedding):
             self.initial_weights = None
         # The following method will set self.trainable_weights
         super(OntoAwareEmbedding, self).build(input_shape)  # input_shape will not be used by Embedding's build.
+        if not self.tune_embedding:
+            # Move embedding to non_trainable_weights
+            self._non_trainable_weights.append(self._trainable_weights.pop())
+
         if self.set_sense_priors:
-            self.trainable_weights.append(self.sense_priors)
+            self._trainable_weights.append(self.sense_priors)
 
         if self.onto_aware_embedding_weights is not None:
             self.set_weights(self.onto_aware_embedding_weights)
  
-    def call(self, x, mask=None):   
+    def call(self, x, mask=None):
         # Remove the word indices at the end before making a call to Embedding.
         x_synsets = x[:, :, :, :-1]  # (num_samples, num_words, num_senses, num_hyps)
         # Taking the last index from the first sense. The last index in all the senses will be the same.

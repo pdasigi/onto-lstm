@@ -4,18 +4,20 @@ import pickle
 import random
 import codecs
 import numpy
+from overrides import overrides
 
 from keras.models import Model, load_model
-from keras.layers import Dense, Dropout, Embedding, Input, LSTM, Bidirectional, merge
+from keras.layers import Dense, Dropout, Embedding, Input, merge
 
 from embedding import OntoAwareEmbedding
-from pooling import AveragePooling, IntraAttention 
+from encoders import LSTMEncoder, OntoLSTMEncoder
+from pooling import AveragePooling, IntraAttention
 from index_data import DataProcessor
 from onto_attention import OntoAttentionLSTM, OntoAttentionNSE
 from nse import NSE, MultipleMemoryAccessNSE, InputMemoryMerger, OutputSplitter
 
 class EntailmentModel(object):
-    def __init__(self, bidirectional=False, intra_attention=False, **kwargs):
+    def __init__(self, bidirectional=False, intra_attention=False, tune_embedding=False, **kwargs):
         self.data_processor = DataProcessor()
         if "embed_dim" in kwargs:
             self.embed_dim = kwargs["embed_dim"]
@@ -23,12 +25,14 @@ class EntailmentModel(object):
             self.embed_dim = 50
         self.bidirectional = bidirectional
         self.intra_attention = intra_attention
+        self.tune_embedding = tune_embedding
         self.numpy_rng = numpy.random.RandomState(12345)
         self.label_map = {}  # Maps labels to integers.
         self.model = None
         self.best_epoch = 0  # index of the best epoch
         self.model_name_prefix = None
         self.custom_objects = None
+        self.encoder_model = None
 
     def train(self, train_inputs, train_labels, num_epochs=20, mlp_size=1024, mlp_activation='relu',
               dropout=None, embedding_file=None, tune_embedding=True, num_mlp_layers=2,
@@ -92,17 +96,23 @@ class EntailmentModel(object):
 
     def _get_encoded_sentence_variables(self, sent1_input_layer, sent2_input_layer, dropout,
                                         embedding_file, tune_embedding):
-        # Subclasses implement their own ways of encoding sentences.
-        raise NotImplementedError
-
-    @staticmethod
-    def _make_one_hot(indices):
-        # Accepts an array of indices, and converts them to a one-hot matrix
-        num_classes = max(indices) + 1  # Assuming that the range is [0, max]
-        one_hot_indices = numpy.zeros((len(indices), num_classes))
-        for i, ind in enumerate(indices):
-            one_hot_indices[i][ind] = 1.0
-        return one_hot_indices
+        if self.bidirectional:
+            encoded_sent1_seq = self.encoder_model.get_encoded_phrase(sent1_input_layer, dropout=dropout,
+                                                                      embedding=embedding_file)
+            encoded_sent2_seq = self.encoder_model.get_encoded_phrase(sent2_input_layer, dropout=dropout,
+                                                                      embedding=embedding_file)
+            if self.intra_attention:
+                pooling_layer = IntraAttention(name='intra_attention')
+            else:
+                pooling_layer = AveragePooling(name='average_pooling')
+            encoded_sent1 = pooling_layer(encoded_sent1_seq)
+            encoded_sent2 = pooling_layer(encoded_sent2_seq)
+        else:
+            encoded_sent1 = self.encoder_model.get_encoded_phrase(sent1_input_layer, dropout=dropout,
+                                                                  embedding=embedding_file)
+            encoded_sent2 = self.encoder_model.get_encoded_phrase(sent2_input_layer, dropout=dropout,
+                                                                  embedding=embedding_file)
+        return encoded_sent1, encoded_sent2
 
     def process_train_data(self, input_file, onto_aware):
         print >>sys.stderr, "Reading training data"
@@ -122,7 +132,7 @@ class EntailmentModel(object):
         print >>sys.stderr, "Indexing training data"
         train_inputs = self.data_processor.prepare_paired_input(tagged_sentences, onto_aware=onto_aware,
                                                                 for_test=False, remove_singletons=True)
-        train_labels = self._make_one_hot(label_ind)
+        train_labels = self.data_processor.make_one_hot(label_ind)
         return train_inputs, train_labels
 
     def process_test_data(self, input_file, onto_aware, is_labeled=True):
@@ -147,7 +157,7 @@ class EntailmentModel(object):
         sentlenlimit = input_shape[1]  # (num_sentences, num_words, num_senses, num_hyps)
         test_inputs = self.data_processor.prepare_paired_input(tagged_sentences, onto_aware=onto_aware,
                                                                sentlenlimit=sentlenlimit, for_test=True)
-        test_labels = self._make_one_hot(label_ind)
+        test_labels = self.data_processor.make_one_hot(label_ind)
         return test_inputs, test_labels
 
     def test(self, inputs, targets):
@@ -195,6 +205,11 @@ class EntailmentModel(object):
 class LSTMEntailmentModel(EntailmentModel):
     def __init__(self, **kwargs):
         super(LSTMEntailmentModel, self).__init__(**kwargs)
+        # If bidirectional, we'll do pooling here. So make the encoder return sequences iff bidirectional.
+        self.encoder_model = LSTMEncoder(data_processor=self.data_processor, embed_dim=self.embed_dim,
+                                         bidirectional=self.bidirectional,
+                                         tune_embedding=self.tune_embedding,
+                                         return_sequences=self.bidirectional)
         self.model_name_prefix = "lstm_ent_bi=%s_pool-att=%s" % (self.bidirectional, self.intra_attention)
         self.custom_objects = {}
         if self.bidirectional:
@@ -203,47 +218,9 @@ class LSTMEntailmentModel(EntailmentModel):
             else: 
                 self.custom_objects["AveragePooling"] = AveragePooling
 
-    def _get_encoded_sentence_variables(self, sent1_input_layer, sent2_input_layer, dropout,
-                                        embedding_file, tune_embedding):
-        if embedding_file is None:
-            if not tune_embedding:
-                print >>sys.stderr, "Pretrained embedding is not given. Setting tune_embedding to True."
-                tune_embedding = True
-            embedding = None
-        else:
-            # Put the embedding in a list for Keras to treat it as initiali weights of the embeddign layer.
-            embedding = [self.data_processor.get_embedding_matrix(embedding_file, onto_aware=False)]
-        vocab_size = self.data_processor.get_vocab_size(onto_aware=False)
-        embedding_layer = Embedding(input_dim=vocab_size, output_dim=self.embed_dim, weights=embedding,
-            trainable=tune_embedding, mask_zero=True, name="embedding")
-        embedded_sent1 = embedding_layer(sent1_input_layer)
-        embedded_sent2 = embedding_layer(sent2_input_layer)
-        if "embedding" in dropout:
-            embedded_sent1 = Dropout(dropout["embedding"])(embedded_sent1)
-            embedded_sent2 = Dropout(dropout["embedding"])(embedded_sent2)
-        if self.bidirectional:
-            encoder = Bidirectional(LSTM(input_dim=self.embed_dim, output_dim=self.embed_dim,
-                                         return_sequences=True), name="encoder")
-            encoded_sent1_seq = encoder(embedded_sent1)
-            encoded_sent2_seq = encoder(embedded_sent2)
-            if self.intra_attention:
-                pooling_layer = IntraAttention(name='intra_attention')
-            else:
-                pooling_layer = AveragePooling(name='average_pooling')
-            encoded_sent1 = pooling_layer(encoded_sent1_seq)
-            encoded_sent2 = pooling_layer(encoded_sent2_seq)
-        else:
-            encoder = LSTM(input_dim=self.embed_dim, output_dim=self.embed_dim, name="encoder")
-            encoded_sent1 = encoder(embedded_sent1)
-            encoded_sent2 = encoder(embedded_sent2)
-        if "encoder" in dropout:
-            encoded_sent1 = Dropout(dropout["encoder"])(encoded_sent1)
-            encoded_sent2 = Dropout(dropout["encoder"])(encoded_sent2)
-        return encoded_sent1, encoded_sent2
-
 
 class OntoLSTMEntailmentModel(EntailmentModel):
-    def __init__(self, num_senses, num_hyps, use_attention, set_sense_priors, tune_embedding, **kwargs):
+    def __init__(self, num_senses, num_hyps, use_attention, set_sense_priors, **kwargs):
         super(OntoLSTMEntailmentModel, self).__init__(**kwargs)
         # Set self.data_processor again, now with the right arguments.
         self.data_processor = DataProcessor(word_syn_cutoff=num_senses, syn_path_cutoff=num_hyps)
@@ -252,8 +229,15 @@ class OntoLSTMEntailmentModel(EntailmentModel):
         self.attention_model = None  # Keras model with just embedding and encoder to output attention.
         self.set_sense_priors = set_sense_priors
         self.use_attention = use_attention
+        # If bidirectional, we'll do pooling here. So make the encoder return sequences iff bidirectional.
+        self.encoder_model = OntoLSTMEncoder(num_senses=num_senses, num_hyps=num_hyps,
+                                             use_attention=use_attention, set_sense_priors=set_sense_priors,
+                                             data_processor=self.data_processor, embed_dim=self.embed_dim,
+                                             bidirectional=self.bidirectional,
+                                             tune_embedding=self.tune_embedding,
+                                             return_sequences=self.bidirectional)
         self.model_name_prefix = "ontolstm_ent_att=%s_senses=%d_hyps=%d_sense-priors=%s_tune-embedding=%s_bi=%s_pool-att=%s" % (
-            str(self.use_attention), self.num_senses, self.num_hyps, str(set_sense_priors), str(tune_embedding),
+            str(self.use_attention), self.num_senses, self.num_hyps, str(set_sense_priors), str(self.tune_embedding),
             str(self.bidirectional), str(self.intra_attention))
         self.custom_objects = {"OntoAttentionLSTM": OntoAttentionLSTM, "OntoAwareEmbedding": OntoAwareEmbedding}
         if self.bidirectional:
@@ -262,56 +246,12 @@ class OntoLSTMEntailmentModel(EntailmentModel):
             else: 
                 self.custom_objects["AveragePooling"] = AveragePooling
 
-    def _get_encoded_sentence_variables(self, sent1_input_layer, sent2_input_layer, dropout,
-                                        embedding_file, tune_embedding):
-        word_vocab_size = self.data_processor.get_vocab_size(onto_aware=False)
-        synset_vocab_size = self.data_processor.get_vocab_size(onto_aware=True)
-        if embedding_file is None:
-            if not tune_embedding:
-                print >>sys.stderr, "Pretrained embedding is not given. Setting tune_embedding to True."
-                tune_embedding = True
-            embedding_weights = None
-        else:
-            # TODO: Other sources for prior initialization
-            embedding = self.data_processor.get_embedding_matrix(embedding_file, onto_aware=True)
-            # Put the embedding in a list for Keras to treat it as initial weights of the embedding layer.
-            embedding_weights = [embedding]
-            #if self.set_sense_priors:
-            #    initial_sense_prior_parameters = numpy.random.uniform(low=0.01, high=0.99, size=(word_vocab_size, 1))
-            #    embedding_weights.append(initial_sense_prior_parameters)
-        embedding_layer = OntoAwareEmbedding(word_vocab_size, synset_vocab_size, self.embed_dim, weights=embedding_weights,
-            mask_zero=True, set_sense_priors=self.set_sense_priors, trainable=tune_embedding, name="embedding")
-        embedded_sent1 = embedding_layer(sent1_input_layer)
-        embedded_sent2 = embedding_layer(sent2_input_layer)
-        if "embedding" in dropout:
-            embedded_sent1 = Dropout(dropout["embedding"])(embedded_sent1)
-            embedded_sent2 = Dropout(dropout["embedding"])(embedded_sent2)
-        if self.bidirectional:
-            encoder = self.get_encoder(return_sequences=True)
-            bi_encoder = Bidirectional(encoder)
-            encoded_sent1_seq = bi_encoder(embedded_sent1)
-            encoded_sent2_seq = bi_encoder(embedded_sent2)
-            if self.intra_attention:
-                pooling_layer = IntraAttention(name="intra_attention")
-            else:
-                pooling_layer = AveragePooling(name="average_pooling")
-            encoded_sent1 = pooling_layer(encoded_sent1_seq)
-            encoded_sent2 = pooling_layer(encoded_sent2_seq)
-        else:
-            encoder = self.get_encoder()
-            encoded_sent1 = encoder(embedded_sent1)
-            encoded_sent2 = encoder(embedded_sent2)
-        if "encoder" in dropout:
-            encoded_sent1 = Dropout(dropout["encoder"])(encoded_sent1)
-            encoded_sent2 = Dropout(dropout["encoder"])(encoded_sent2)
-        return encoded_sent1, encoded_sent2
-
     def get_encoder(self, return_sequences=False):
         lstm = OntoAttentionLSTM(input_dim=self.embed_dim, output_dim=self.embed_dim, num_senses=self.num_senses,
                                  num_hyps=self.num_hyps, use_attention=self.use_attention, consume_less="gpu",
                                  return_sequences=return_sequences, name="onto_lstm")
         return lstm
-        
+
     def get_attention(self, inputs):
         # Takes inputs and returns pairs of synsets and corresponding attention values.
         if not self.attention_model:
@@ -395,6 +335,7 @@ class NSEEntailmentModel(EntailmentModel):
         if self.shared_memory:
             self.custom_objects["MultipleMemoryAccessNSE"] = MultipleMemoryAccessNSE
 
+    @overrides
     def _get_encoded_sentence_variables(self, sent1_input_layer, sent2_input_layer, dropout,
                                         embedding_file, tune_embedding):
         if embedding_file is None:
@@ -487,7 +428,9 @@ def main():
                                                        intra_attention=args.intra_attention,
                                                        tune_embedding=args.tune_embedding)
         else:
-            entailment_model = LSTMEntailmentModel(embed_dim=args.embed_dim, bidirectional=args.bidirectional,
+            entailment_model = LSTMEntailmentModel(embed_dim=args.embed_dim,
+                                                   bidirectional=args.bidirectional,
+                                                   tune_embedding=args.tune_embedding,
                                                    intra_attention=args.intra_attention)
     else:
         if args.onto_aware:
@@ -498,7 +441,9 @@ def main():
                                                       set_sense_priors=args.set_sense_priors,
                                                       embed_dim=args.embed_dim, tune_embedding=args.tune_embedding)
         else: 
-            entailment_model = NSEEntailmentModel(embed_dim=args.embed_dim, shared_memory=args.nse_shared_memory)
+            entailment_model = NSEEntailmentModel(embed_dim=args.embed_dim,
+                                                  shared_memory=args.nse_shared_memory,
+                                                  tune_embedding=args.tune_embedding)
 
     ## Train model or load trained model
     if args.train_file is None:

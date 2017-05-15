@@ -144,7 +144,7 @@ class DataProcessor(object):
         Accepts an array of indices, and converts them to a one-hot matrix
         '''
         # Making indices 0 based.
-        indices = indices - min(indices)
+        indices = numpy.asarray(indices) - min(indices)
         num_classes = max(indices) + 1
         one_hot_indices = numpy.zeros((len(indices), num_classes))
         for i, ind in enumerate(indices):

@@ -143,10 +143,12 @@ class DataProcessor(object):
         '''
         Accepts an array of indices, and converts them to a one-hot matrix
         '''
-        num_classes = max(indices)  # Assuming that the range is [1, max]
+        # Making indices 0 based.
+        indices = indices - min(indices)
+        num_classes = max(indices) + 1
         one_hot_indices = numpy.zeros((len(indices), num_classes))
         for i, ind in enumerate(indices):
-            one_hot_indices[i][ind-1] = 1.0
+            one_hot_indices[i][ind] = 1.0
         return one_hot_indices
 
     # TODO: Separate methods for returning word inds and conc inds

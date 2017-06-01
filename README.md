@@ -53,8 +53,9 @@ Download the train and test data created by Yonatan Belinkov, available [here](h
 ```
 where `4` indicates the label (i.e. the 4th word, `made` is the head word to which the PP `in dispute` attaches to). Note that all verbs are indicated as `VB` and all nouns as `NN`. We do not follow the Penn Tree Bank POS tag set here. In fact, OntoLSTM needs a coarse distinction among nouns, verbs, adjectives and adverbs, and not more since those are the word classes available in WordNet. See the method `get_hypernyms_sentence` in `index_data.py` for the logic.
 
-### Run AutoExtend on GloVe
-We obtained synset vectors by running AutoExtend on GloVe, and used these to initialize our synset embeddings.
+### Obtain synset embeddings
+We got synset vectors by running AutoExtend on GloVe, and used these to initialize our synset embeddings.
+You can download them [here](https://drive.google.com/drive/folders/0B6KTy_3y_sxXNXNIekVRWGtvVlE?usp=sharing). Alternatively, you can build them yourself:
 Download [AutoExtend](http://www.cis.lmu.de/~sascha/AutoExtend/) and run it on [GloVe](https://nlp.stanford.edu/projects/glove/) vectors, to obtain synset vectors. We use the 100d vectors. Make sure to use WordNet 3.1 as the ontology for AutoExtend.
 
 

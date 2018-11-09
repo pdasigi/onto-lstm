@@ -22,8 +22,8 @@
     "phrase_embedder": {
       "tokens": {
         "type": "embedding",
-        "embedding_dim": 50,
-	"pretrained_file": "/Users/pradeepd/data/glove.6B/glove.6B.50d.txt.gz",
+        "embedding_dim": 100,
+	"pretrained_file": "/Users/pradeepd/data/glove.6B/glove.6B.100d.txt.gz",
         "trainable": true
       },
       "elmo": {
@@ -36,13 +36,13 @@
     },
     "phrase_encoder": {
       "type": "lstm",
-      "input_size": 1074,
-      "hidden_size": 30,
+      "input_size": 1124,
+      "hidden_size": 100,
       "num_layers": 1,
       "bidirectional": true
     },
     "predictor_feedforward": {
-      "input_dim": 90,  // 3 * phrase encoder's hidden size
+      "input_dim": 300,  // 3 * phrase encoder's hidden size
       // Original model had separate projections to 20 dim each for head, prep, and child and a tanh being applied to their sum.
       // We can do the same by passing the concatenation to a tanh layer of width 20 first.
       // The model had the option of adding additional mlp layers, but the best model did not have any. But if needed,
@@ -52,18 +52,16 @@
       "hidden_dims": [20, 1],
       "activations": ["tanh", "linear"]
     },
-    "embedding_dropout": 0.5,
+    "embedding_dropout": 0.0, // ELMo already has dropout
     "encoder_dropout": 0.2
   },
   "iterator": {
-    "type": "bucket",
-    "sorting_keys": [["phrase", "num_tokens"]],
-    "padding_noise": 0.0,
+    "type": "basic",
     "batch_size" : 32  // Keras' default batch size
   },
   "trainer": {
-    "num_epochs": 50,
-    "patience": 10,
+    "num_epochs": 20,
+    "patience": 6,
     "validation_metric": "+accuracy",
     "cuda_device": -1,
     "optimizer": {

@@ -1,0 +1,74 @@
+{
+  "dataset_reader": {
+    "type": "pp_attachment",
+    "token_indexers": {
+      "tokens": {
+	"type": "single_id",
+	"lowercase_tokens": false
+      },
+      "elmo": {
+        "type": "elmo_characters"
+      }
+    },
+    "lazy": false
+  },
+  "vocabulary": {
+    "non_padded_namespaces": ["head_index"]
+  },
+  "train_data_path": "/Users/pradeepd/data/pp_attachment_data/pp_attachment_train_split.tsv",
+  "validation_data_path": "/Users/pradeepd/data/pp_attachment_data/pp_attachment_dev_split.tsv",
+  "model": {
+    "type": "pp_attachment",
+    "phrase_embedder": {
+      "tokens": {
+        "type": "embedding",
+        "embedding_dim": 50,
+	"pretrained_file": "/Users/pradeepd/data/glove.6B/glove.6B.50d.txt.gz",
+        "trainable": true
+      },
+      "elmo": {
+        "type": "elmo_token_embedder",
+	"options_file": "https://s3-us-west-2.amazonaws.com/allennlp/models/elmo/2x4096_512_2048cnn_2xhighway/elmo_2x4096_512_2048cnn_2xhighway_options.json",
+	"weight_file": "https://s3-us-west-2.amazonaws.com/allennlp/models/elmo/2x4096_512_2048cnn_2xhighway/elmo_2x4096_512_2048cnn_2xhighway_weights.hdf5",
+	"do_layer_norm": false,
+	"dropout": 0.5
+      }
+    },
+    "phrase_encoder": {
+      "type": "lstm",
+      "input_size": 1074,
+      "hidden_size": 30,
+      "num_layers": 1,
+      "bidirectional": true
+    },
+    "predictor_feedforward": {
+      "input_dim": 90,  // 3 * phrase encoder's hidden size
+      // Original model had separate projections to 20 dim each for head, prep, and child and a tanh being applied to their sum.
+      // We can do the same by passing the concatenation to a tanh layer of width 20 first.
+      // The model had the option of adding additional mlp layers, but the best model did not have any. But if needed,
+      // we can add more layers here, all of the same size, and the same activation (tanh). The final layer needs to be a
+      // linear with size 1.
+      "num_layers": 2,
+      "hidden_dims": [20, 1],
+      "activations": ["tanh", "linear"]
+    },
+    "embedding_dropout": 0.5,
+    "encoder_dropout": 0.2
+  },
+  "iterator": {
+    "type": "bucket",
+    "sorting_keys": [["phrase", "num_tokens"]],
+    "padding_noise": 0.0,
+    "batch_size" : 32  // Keras' default batch size
+  },
+  "trainer": {
+    "num_epochs": 50,
+    "patience": 10,
+    "validation_metric": "+accuracy",
+    "cuda_device": -1,
+    "optimizer": {
+      "type": "adam",
+      "lr": 0.001
+    }
+  }
+}

@@ -32,7 +32,7 @@ onto_lstm = OntoLSTMEncoder(num_senses=NUM_SENSES, num_hyps=NUM_HYPS, use_attent
                             set_sense_priors=SENSE_PRIORS, data_processor=data_processor,
                             embed_dim=EMBED_DIM, return_sequences=False, bidirectional=BIDIRECTIONAL,
                             tune_embedding=TUNE_EMBEDDING)
-encoded_input = onto_lstm.get_encoded_phrase(input_layer, embedding_file=EMBEDDING_FILE)
+encoded_input = onto_lstm.get_encoded_phrase(input_layer, embedding=EMBEDDING_FILE)
 softmax_layer = Dense(2, activation='softmax')
 output_predictions = softmax_layer(encoded_input)
 model = Model(input=input_layer, output=output_predictions)

@@ -5,3 +5,4 @@ keras==1.2.1
 h5py
 nltk
 overrides
+allennlp
